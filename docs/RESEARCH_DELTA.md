@@ -70,8 +70,9 @@ is tested for real in Stage 1.
 ## 4. New findings that change the plan
 
 1. **whisper.cpp with Vulkan needs the Vulkan SDK at build time** (headers and the `VULKAN_SDK`
-   variable). The laptop has Vulkan drivers but not the SDK. It is a free install that still
-   needs the owner's OK. Without it, Stage 0/1 speed measurements are processor-only.
+   variable). The laptop had Vulkan drivers but not the SDK. Vulkan SDK 1.4.363.0 was installed
+   on 12 Nov 2026 with the owner's approval (`C:\VulkanSDK\1.4.363.0`). A GPU build has not been
+   attempted yet.
 2. **Possible build conflict on Windows.** Another open-source dictation app reported that
    `whisper-rs-sys` and the `tokenizers` crate use incompatible C runtime linking on Windows and
    that Vulkan builds crashed on machines without a GPU. Stage 1 must read Handy's real build
