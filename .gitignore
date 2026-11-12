@@ -1,0 +1,30 @@
+# Build output
+/target/
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Speech models and audio never go into git
+/models/
+*.gguf
+*.ggml
+*.onnx
+*.bin
+
+# The owner's own voice recordings stay on this laptop
+/bench/my_recordings/*
+!/bench/my_recordings/README.md
+/bench/audio_cache/
+
+# Secrets (keys live in the OS keystore, never in files)
+.env
+.env.*
+*.keystore
+*.jks
+*.pfx
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

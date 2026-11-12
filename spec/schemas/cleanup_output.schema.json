@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cleanup_output.schema.json",
+  "title": "Cleanup output",
+  "description": "What an LLM cleanup provider must return for one dictation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text", "changes", "uncertain_spans"],
+  "properties": {
+    "text": { "type": "string" },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "before", "after"],
+        "properties": {
+          "type": {
+            "enum": ["filler", "backtrack", "punctuation", "list", "dictionary", "grammar", "style"]
+          },
+          "before": { "type": "string" },
+          "after": { "type": "string" }
+        }
+      }
+    },
+    "uncertain_spans": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

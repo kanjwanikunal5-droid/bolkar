@@ -1,0 +1,15 @@
+Bolkar (working name)
+Copyright (c) 2026 Kunal Kanjwani. Released under the MIT License (see LICENSE).
+
+This is an original project. It is not affiliated with, endorsed by, or derived from the code
+of Wispr Flow or any other commercial dictation product.
+
+Third-party code
+----------------
+No third-party source code has been copied into this repository so far.
+
+The open-source app Handy (https://github.com/cjpais/Handy, MIT License) is studied as a
+reference architecture. If any of its code is reused, the file and the Handy copyright notice
+will be listed here.
+
+Rust crates used by the build are listed in Cargo.lock, each under its own licence.

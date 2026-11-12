@@ -1,0 +1,25 @@
+[package]
+name = "app-bench"
+description = "Benchmark and probe command-line tools: WER/CER scoring, hardware probe, pipeline runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+app-core = { path = "../crates/core" }
+serde.workspace = true
+serde_json.workspace = true
+sysinfo = "0.37"
+
+[[bin]]
+name = "wer"
+path = "src/bin/wer.rs"
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[[bin]]
+name = "clean"
+path = "src/bin/clean.rs"

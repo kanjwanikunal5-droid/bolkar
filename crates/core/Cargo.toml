@@ -1,0 +1,16 @@
+[package]
+name = "app-core"
+description = "Shared core: text pipeline, rules, dictionary, snippets, scoring, hardware advice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-normalization.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

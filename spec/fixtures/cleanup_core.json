@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "description": "Golden input -> expected output cases for the DeterministicRules cleanup pipeline. Every platform (Rust core, and any Kotlin/TS port) must pass these exact cases. 'must_pass' marks the examples named in the build prompt.",
+  "defaults": { "level": "LIGHT", "spoken_commands": true },
+  "cases": [
+    {
+      "id": "bt-001", "category": "backtrack", "must_pass": true,
+      "input": "Let's meet at 2 PM... actually make that 3 PM",
+      "expected": "Let's meet at 3 PM."
+    },
+    {
+      "id": "bt-002", "category": "backtrack", "must_pass": true,
+      "input": "Schedule the meeting for Monday at 3 PM. Actually, make that 4 PM.",
+      "expected": "Schedule the meeting for Monday at 4 PM."
+    },
+    {
+      "id": "bt-003", "category": "backtrack", "must_pass": true,
+      "input": "Revenue increased by 15 percent. Sorry, it increased by 12 percent.",
+      "expected": "Revenue increased by 12 percent."
+    },
+    {
+      "id": "fl-001", "category": "filler", "must_pass": true,
+      "input": "So, um, I think, you know, we should probably review the budget again.",
+      "expected": "So, I think we should probably review the budget again."
+    },
+    {
+      "id": "neg-001", "category": "negative", "must_pass": true,
+      "note": "No list command is triggered and no full stop is invented.",
+      "input": "I have two points to make",
+      "expected": "I have two points to make"
+    },
+    {
+      "id": "neg-002", "category": "negative",
+      "input": "I have two points to make.",
+      "expected": "I have two points to make."
+    },
+    {
+      "id": "bt-004", "category": "backtrack",
+      "input": "The call is at 3 PM... actually, 4 PM",
+      "expected": "The call is at 4 PM."
+    },
+    {
+      "id": "bt-005", "category": "backtrack",
+      "note": "Chained corrections: only the last value survives.",
+      "input": "Let's meet at 2 PM, actually 3 PM, no wait, 4 PM.",
+      "expected": "Let's meet at 4 PM."
+    },
+    {
+      "id": "bt-006", "category": "backtrack",
+      "input": "Send the report to Rahul. Scratch that, send it to Priya.",
+      "expected": "Send it to Priya."
+    },
+    {
+      "id": "bt-007", "category": "backtrack",
+      "note": "Only the corrected sentence changes; the text around it is kept.",
+      "input": "Hi team. The total is 5,000 rupees. No wait, 6,000 rupees. Thanks.",
+      "expected": "Hi team. The total is 6,000 rupees. Thanks."
+    },
+    {
+      "id": "bt-neg-001", "category": "backtrack-negative",
+      "note": "Not clearly a correction, so both parts are kept.",
+      "input": "We will ship on Monday. Sorry, we will need more time.",
+      "expected": "We will ship on Monday. Sorry, we will need more time."
+    },
+    {
+      "id": "bt-neg-002", "category": "backtrack-negative",
+      "input": "I actually like the new design.",
+      "expected": "I actually like the new design."
+    },
+    {
+      "id": "bt-neg-003", "category": "backtrack-negative",
+      "note": "A number in the next sentence is not a correction of the price.",
+      "input": "It costs 5 dollars. Actually, 3 people came yesterday.",
+      "expected": "It costs 5 dollars. Actually, 3 people came yesterday."
+    },
+    {
+      "id": "fl-002", "category": "filler",
+      "input": "Uh, the numbers look good.",
+      "expected": "The numbers look good."
+    },
+    {
+      "id": "fl-003", "category": "filler",
+      "input": "The report is, like, almost done.",
+      "expected": "The report is almost done."
+    },
+    {
+      "id": "fl-004", "category": "filler",
+      "input": "We should go, you know.",
+      "expected": "We should go."
+    },
+    {
+      "id": "fl-neg-001", "category": "filler-negative",
+      "note": "'like' and 'you know' carry meaning here.",
+      "input": "I like the new dashboard and you know the team.",
+      "expected": "I like the new dashboard and you know the team."
+    },
+    {
+      "id": "st-001", "category": "stutter",
+      "input": "I I think we we should start.",
+      "expected": "I think we should start."
+    },
+    {
+      "id": "ls-001", "category": "list",
+      "input": "We need three things. First, the budget. Second, the timeline. Third, the team.",
+      "expected": "We need three things.\n1. The budget\n2. The timeline\n3. The team"
+    },
+    {
+      "id": "ls-002", "category": "list",
+      "input": "Number one, update the forecast. Number two, send it to finance.",
+      "expected": "1. Update the forecast\n2. Send it to finance"
+    },
+    {
+      "id": "ls-neg-001", "category": "list-negative",
+      "input": "The first quarter was strong and the second quarter was weak.",
+      "expected": "The first quarter was strong and the second quarter was weak."
+    },
+    {
+      "id": "cm-001", "category": "command",
+      "input": "Hi Rahul, new line I wanted to share the update full stop",
+      "expected": "Hi Rahul,\nI wanted to share the update."
+    },
+    {
+      "id": "cm-002", "category": "command",
+      "input": "Agenda for today. Bullet point, budget review. Bullet point, hiring plan.",
+      "expected": "Agenda for today.\n- Budget review.\n- Hiring plan."
+    },
+    {
+      "id": "cm-neg-001", "category": "command-negative",
+      "note": "'new line' and 'period' are ordinary words here.",
+      "input": "We launched a new line of products this period.",
+      "expected": "We launched a new line of products this period."
+    },
+    {
+      "id": "dc-001", "category": "dictionary",
+      "dictionary": [
+        { "term": "EBITDA", "spoken_variants": ["e bit da"] },
+        { "term": "Power BI", "spoken_variants": [] }
+      ],
+      "input": "our ebitda improved and the power bi dashboard is ready.",
+      "expected": "Our EBITDA improved and the Power BI dashboard is ready."
+    },
+    {
+      "id": "sn-001", "category": "snippet",
+      "snippets": [{ "trigger": "insert my calendar link", "body": "https://cal.example/demo" }],
+      "input": "You can book a slot here, insert my calendar link",
+      "expected": "You can book a slot here, https://cal.example/demo"
+    },
+    {
+      "id": "hg-001", "category": "hinglish",
+      "input": "Haan, toh, kal milte hain.",
+      "expected": "Haan, kal milte hain."
+    },
+    {
+      "id": "hg-002", "category": "hinglish",
+      "input": "Meeting 3 baje hai, nahi nahi, 4 baje hai.",
+      "expected": "Meeting 4 baje hai."
+    },
+    {
+      "id": "hg-neg-001", "category": "hinglish-negative",
+      "note": "Hindi reduplication is grammar, not a stutter.",
+      "input": "Dheere dheere kaam ho raha hai.",
+      "expected": "Dheere dheere kaam ho raha hai."
+    },
+    {
+      "id": "lit-001", "category": "level",
+      "level": "LITERAL",
+      "note": "LITERAL keeps fillers.",
+      "input": "So, um, I think we should go.",
+      "expected": "So, um, I think we should go."
+    }
+  ]
+}

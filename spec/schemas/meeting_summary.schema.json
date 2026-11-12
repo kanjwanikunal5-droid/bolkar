@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "meeting_summary.schema.json",
+  "title": "Meeting summary",
+  "description": "Evidence-grounded meeting notes. Every item cites at least one transcript segment id. Sections with nothing to report are empty arrays (the UI omits them).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "overview",
+    "executive_summary",
+    "topics",
+    "decisions",
+    "action_items",
+    "risks",
+    "open_questions",
+    "numbers",
+    "next_steps",
+    "takeaway"
+  ],
+  "properties": {
+    "overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "date", "duration_min", "participants", "purpose"],
+      "properties": {
+        "title": { "type": "string" },
+        "date": { "type": ["string", "null"] },
+        "duration_min": { "type": ["number", "null"], "minimum": 0 },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "purpose": { "type": ["string", "null"] }
+      }
+    },
+    "executive_summary": { "type": "array", "items": { "$ref": "#/$defs/point" } },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "points"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "points": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/point" } }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "status", "evidence"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["confirmed", "proposed"] },
+          "evidence": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "owner", "deadline", "evidence"],
+        "properties": {
+          "action": { "type": "string", "minLength": 1 },
+          "owner": { "type": ["string", "null"], "description": "null is shown as 'Not specified'." },
+          "deadline": { "type": ["string", "null"], "description": "null is shown as 'Not specified'." },
+          "evidence": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/point" } },
+    "open_questions": { "type": "array", "items": { "$ref": "#/$defs/point" } },
+    "numbers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "context", "evidence"],
+        "properties": {
+          "value": { "type": "string", "minLength": 1, "description": "Exactly as spoken." },
+          "context": { "type": "string" },
+          "evidence": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "next_steps": { "type": "array", "items": { "$ref": "#/$defs/point" } },
+    "takeaway": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/point" }]
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Transcript segment ids that directly support the item."
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "evidence"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}
