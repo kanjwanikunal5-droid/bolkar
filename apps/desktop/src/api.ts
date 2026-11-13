@@ -1,4 +1,33 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
+
+const READ_ONLY = new Set([
+  "get_status",
+  "get_settings",
+  "list_dictations",
+  "list_models",
+  "get_ai",
+  "list_uploads",
+  "list_terms",
+  "list_snippets",
+  "last_dictation_id",
+]);
+
+/**
+ * The window can open a moment before the app has finished starting up, and the first
+ * calls then fail. Read-only calls are retried for up to about 6 seconds; calls that change
+ * something are never retried, so nothing can happen twice.
+ */
+async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+  const attempts = READ_ONLY.has(cmd) ? 20 : 1;
+  for (let i = 1; ; i++) {
+    try {
+      return await tauriInvoke<T>(cmd, args);
+    } catch (e) {
+      if (i >= attempts) throw e;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+}
 
 export interface Status {
   app_name: string;

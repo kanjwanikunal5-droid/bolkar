@@ -12,9 +12,13 @@ name = "app_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["gpu"]
+default = ["gpu", "custom-protocol"]
 # Vulkan GPU acceleration for whisper.cpp. Needs the Vulkan SDK at build time.
 gpu = ["app-asr/vulkan"]
+# Embeds the built screens (apps/desktop/dist) in the program. Without it the windows try
+# to load the development server at localhost:1420 and stay blank. Run `pnpm build` in
+# apps/desktop before `cargo build`.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
