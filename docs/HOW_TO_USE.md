@@ -42,6 +42,19 @@ You can pause while holding the keys; nothing stops until you let go.
 | `Alt` + `Shift` + `X` | Copy the last dictation |
 | `Alt` + `Shift` + `F` | Fix the last dictation (the app learns new words from your fix) |
 
+While you dictate, a small pill appears at the bottom of the screen: **✕** cancels, the
+moving waveform shows it hears you, **✓** finishes (useful in hands-free mode).
+
+## Meeting notes
+
+1. Open the app -> **Meeting notes**. Give a title, choose **My microphone** and/or
+   **Computer sound** (for Zoom, Google Meet, Teams), tick the consent box, **Start recording**.
+2. Type your own notes in **My thoughts** while you listen; they are kept exactly as written.
+3. **Stop and make notes.** The recording is transcribed on this computer; with AI clean-up
+   on, you get topics, decisions, action items (owner and deadline "Not specified" unless
+   someone said them), numbers and next steps, each with a time. **Copy notes** to paste them
+   anywhere. Use headphones if you can.
+
 ## Teach it your words
 
 - **Dictionary:** add words the way you want them written (for example `EBITDA`, heard as

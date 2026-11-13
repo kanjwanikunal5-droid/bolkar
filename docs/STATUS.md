@@ -1,4 +1,4 @@
-# Status
+﻿# Status
 
 Last updated: **13 November 2026**. Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
@@ -60,7 +60,7 @@ Inside the app, the first dictation after start-up took 8.5 s on large-v3-turbo 
 graphics card, because the card's programs are prepared on first use. On processor only, this
 laptop is too slow for anything but the base model. The GPU build is therefore the default.
 
-## Stage 1 — Windows dictation
+## Stage 1 â€” Windows dictation
 
 | Acceptance check | State | Evidence |
 |---|---|---|
@@ -79,7 +79,7 @@ laptop is too slow for anything but the base model. The GPU build is therefore t
 | Long pauses do not end push-to-talk | **Passed (logic)** | State-machine test: 60 s hold, release ends it. Real hold: not run |
 | 50 dictations without crash or duplicate | **Not run** | Needs the owner |
 
-## Stage 2 — clean-up, dictionary, snippets, AI providers
+## Stage 2 â€” clean-up, dictionary, snippets, AI providers
 
 | Acceptance check | State | Evidence |
 |---|---|---|
@@ -98,10 +98,66 @@ laptop is too slow for anything but the base model. The GPU build is therefore t
 Not built in Stage 2 (moved later): Command Mode (Stage 7), import/export of dictionary and
 snippets (Stage 5), per-app rules editable in the UI.
 
+## Update 13 November 2026 (evening): speed, accuracy, pill, meeting notes
+
+### Speed - found and fixed
+The speech engine had been running on the built-in AMD Radeon 740M (Vulkan lists it first),
+not on the RTX 4050. The app now picks the dedicated card. Measured with large-v3-turbo:
+
+| Clip | Before (built-in chip) | Now (RTX 4050), installed app |
+|---|---|---|
+| 4 s | 2.4 s | 0.40 s |
+| 8 s | 2.4 s | 0.45 s |
+| 14 s | 2.6 s | 0.52 s |
+| 27 s | 3.8 s | 0.73 s |
+
+Also: model loaded and warmed up at start-up, one reusable GPU state, flash attention, and
+Windows "efficiency mode" switched off for the app. A shorter audio window was tried and
+**rejected**: 2-4x faster on short clips but it repeated a sentence on a 14 s clip.
+The first dictation right after installing a new version took 6.6 s once (the graphics driver
+prepares its programs; cached afterwards).
+
+### Accuracy
+- The recogniser hint was a bare word list; Whisper copied its style and dropped full stops
+  ("2.5 crore rupees Please update"). It is now a punctuated "Glossary: ..." sentence; the
+  same clip comes out correctly punctuated.
+- AI clean-up never ran before today: Groq had retired `llama-3.1-8b-instant`, so every
+  request failed and the rules were used (the safety fallback worked as designed). Default is
+  now `qwen/qwen3.8-27b`, and the app picks a current model by itself if one is retired.
+- New check: an AI answer that drops a word the rules kept (including a repeated word) is
+  rejected, except inside a real self-correction. List numbers are no longer "invented numbers".
+- **AI path, all 163 eligible golden fixtures, qwen/qwen3.8-27b: 154 final texts correct
+  (94.5%)**, 21 AI answers rejected by the checks (rules used), median 0.30 s, 90% under
+  0.51 s. Acceptance target was 90%: **passed**.
+- Groq cloud speech recognition is available as an option with its own audio consent (off).
+  Measured 0.26-0.41 s on the test clips; on this laptop the local GPU is now as fast.
+
+### Pill
+Redesigned as [x] cancel - live waveform - [check] finish, with clickable buttons. Checked in
+the installed app: both buttons and 9 animated bars render. Clicking the buttons with a real
+mouse during a real dictation: **not run** (needs the owner).
+
+### Stage 3 - meeting notes (first version)
+Built: recording of microphone ("Me") and computer sound ("Others", WASAPI loopback) as two
+WAV tracks saved every 5 s, consent required, live levels, My Thoughts, transcription on
+this computer (split at quiet points), notes from the AI with the evidence check, plain-text
+notes with "Not specified" for missing owners/deadlines, copy notes, saved in the database.
+
+| Check | State | Evidence |
+|---|---|---|
+| Golden topic-organisation test, real recording of computer sound, real AI | **Passed** | 3 topics (sales +12%, marketing Rs 50,000, hiring 3 interviews), decision "review next Monday" confirmed, no invented task, no owner, own note kept, every item time-stamped |
+| Scenario 2 with a real Google Meet / Zoom call | **Not run** | Needs the owner |
+| 60-minute recording, device unplug | **Not run** | |
+| DOCX / PDF export, editing and versions, meeting search, crash recovery, diarization | **Not built yet** | Next |
+
+### Installer
+Building works. Upgrading the installed copy silently failed with exit code 2 on the last two
+attempts (it had worked earlier the same day); the new program file was copied into place
+instead, and its fingerprint matches the build. To investigate before sharing the installer.
 ## Measured accuracy per language
 
 **None yet.** No real recordings have been scored. No accuracy figure is shown anywhere in the app.
 
 ## Costs so far
 
-₹0. All tools are free; Groq is used on its free tier with the owner's own key.
+â‚¹0. All tools are free; Groq is used on its free tier with the owner's own key.

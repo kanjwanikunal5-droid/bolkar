@@ -2,9 +2,10 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
 import { APP_NAME } from "./brand";
+import { MeetingsPage } from "./Meetings";
 import { AiSettings, DictionaryPage, FixBox, MicMeter, SnippetsPage, UploadsCard } from "./Pages";
 
-type Page = "home" | "history" | "dictionary" | "snippets" | "settings";
+type Page = "home" | "history" | "meetings" | "dictionary" | "snippets" | "settings";
 
 const LANGUAGES: [string, string][] = [
   ["auto", "Detect automatically"],
@@ -219,6 +220,7 @@ export function App() {
   const pages: [Page, string][] = [
     ["home", "Home"],
     ["history", "Dictation history"],
+    ["meetings", "Meeting notes"],
     ["dictionary", "Dictionary"],
     ["snippets", "Snippets"],
     ["settings", "Settings"],
@@ -317,6 +319,7 @@ export function App() {
           </>
         )}
 
+        {page === "meetings" && <MeetingsPage />}
         {page === "dictionary" && <DictionaryPage />}
         {page === "snippets" && <SnippetsPage />}
 

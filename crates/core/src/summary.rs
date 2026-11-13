@@ -155,6 +155,10 @@ impl<'a> Index<'a> {
             // Spelled-out values ("three interviews") must appear as written.
             return self.cited_mentions(ids, value);
         }
+        // "3" is supported by "Three interviews are pending."
+        if crate::llm::spoken_numbers(&self.cited_text(ids)).contains(&want) {
+            return true;
+        }
         let text = self.cited_text(ids);
         // Compare digit runs, ignoring thousands separators.
         let mut runs = Vec::new();
@@ -195,6 +199,206 @@ fn keep_points(
             }
         })
         .collect()
+}
+
+const SUMMARY_SPEC: &str = include_str!("../../../spec/prompts/summary.md");
+
+/// The meeting-summary system prompt from `spec/prompts/summary.md`.
+pub fn summary_prompt(output_language: &str, script: &str) -> String {
+    let after = SUMMARY_SPEC
+        .split_once("## System prompt")
+        .map_or("", |(_, rest)| rest);
+    let body = after.split_once("```\n").map_or("", |(_, rest)| rest);
+    let body = body.split_once("\n```").map_or("", |(b, _)| b);
+    let shape = r#"
+JSON shape (all keys required; use [] or null when empty):
+{"overview":{"title":str,"date":str|null,"duration_min":num|null,"participants":[str],"purpose":str|null},
+ "executive_summary":[{"text":str,"evidence":[id]}],
+ "topics":[{"title":str,"points":[{"text":str,"evidence":[id]}]}],
+ "decisions":[{"text":str,"status":"confirmed"|"proposed","evidence":[id]}],
+ "action_items":[{"action":str,"owner":str|null,"deadline":str|null,"evidence":[id]}],
+ "risks":[{"text":str,"evidence":[id]}],"open_questions":[{"text":str,"evidence":[id]}],
+ "numbers":[{"value":str,"context":str,"evidence":[id]}],"next_steps":[{"text":str,"evidence":[id]}],
+ "takeaway":{"text":str,"evidence":[id]}|null}"#;
+    format!(
+        "{}{shape}",
+        body.replace('\r', "")
+            .replace("{output_language}", output_language)
+            .replace("{script}", script)
+    )
+}
+
+/// The user message: transcript segments plus the user's own notes.
+pub fn summary_request(title: &str, segments: &[Segment], thoughts: &[(u64, String)]) -> String {
+    let segs: Vec<serde_json::Value> = segments
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id, "start": clock(s.start_ms), "end": clock(s.end_ms),
+                "speaker": s.speaker, "text": s.text
+            })
+        })
+        .collect();
+    let notes: Vec<serde_json::Value> = thoughts
+        .iter()
+        .map(|(at, t)| serde_json::json!({ "at": clock(*at), "note": t }))
+        .collect();
+    serde_json::json!({ "title": title, "segments": segs, "my_thoughts": notes }).to_string()
+}
+
+/// Reads the model's JSON answer (tolerates fences and chatter around it).
+pub fn parse_summary(content: &str) -> Result<Summary, String> {
+    let (s, e) = (content.find('{'), content.rfind('}'));
+    match (s, e) {
+        (Some(s), Some(e)) if e > s => {
+            serde_json::from_str(&content[s..=e]).map_err(|e| format!("summary JSON invalid: {e}"))
+        }
+        _ => Err("no JSON in the answer".into()),
+    }
+}
+
+pub fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+}
+
+/// Plain Markdown notes, in the section order of the build plan, empty sections left out.
+pub fn to_markdown(summary: &Summary, segments: &[Segment], thoughts: &[(u64, String)]) -> String {
+    let at: HashMap<&str, u64> = segments
+        .iter()
+        .map(|s| (s.id.as_str(), s.start_ms))
+        .collect();
+    let cite = |ev: &[String]| {
+        let times: Vec<String> = ev
+            .iter()
+            .filter_map(|id| at.get(id.as_str()))
+            .map(|ms| clock(*ms))
+            .collect();
+        if times.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", times.join(", "))
+        }
+    };
+    let mut md = String::new();
+    let o = &summary.overview;
+    md.push_str(&format!(
+        "# {}\n\n",
+        if o.title.is_empty() {
+            "Meeting notes"
+        } else {
+            &o.title
+        }
+    ));
+    let mut meta = Vec::new();
+    if let Some(d) = &o.date {
+        meta.push(format!("Date: {d}"));
+    }
+    if let Some(m) = o.duration_min {
+        meta.push(if m < 1.0 {
+            format!("Duration: {:.0} s", m * 60.0)
+        } else {
+            format!("Duration: {m:.0} min")
+        });
+    }
+    if !o.participants.is_empty() {
+        meta.push(format!("Participants: {}", o.participants.join(", ")));
+    }
+    if let Some(p) = &o.purpose {
+        meta.push(format!("Purpose: {p}"));
+    }
+    if !meta.is_empty() {
+        md.push_str(&format!("{}\n\n", meta.join("  \n")));
+    }
+    let points = |md: &mut String, title: &str, items: &[Point]| {
+        if !items.is_empty() {
+            md.push_str(&format!("## {title}\n\n"));
+            for p in items {
+                md.push_str(&format!("- {}{}\n", p.text, cite(&p.evidence)));
+            }
+            md.push('\n');
+        }
+    };
+    points(&mut md, "Executive summary", &summary.executive_summary);
+    if !summary.topics.is_empty() {
+        md.push_str("## Key discussion points\n\n");
+        for t in &summary.topics {
+            md.push_str(&format!("### {}\n\n", t.title));
+            for p in &t.points {
+                md.push_str(&format!("- {}{}\n", p.text, cite(&p.evidence)));
+            }
+            md.push('\n');
+        }
+    }
+    if !summary.decisions.is_empty() {
+        md.push_str("## Decisions\n\n");
+        for d in &summary.decisions {
+            let status = match d.status {
+                DecisionStatus::Confirmed => "Confirmed",
+                DecisionStatus::Proposed => "Proposed",
+            };
+            md.push_str(&format!(
+                "- **{status}:** {}{}\n",
+                d.text,
+                cite(&d.evidence)
+            ));
+        }
+        md.push('\n');
+    }
+    if !summary.action_items.is_empty() {
+        md.push_str(
+            "## Action items\n\n| Action | Owner | Deadline | Evidence |\n|---|---|---|---|\n",
+        );
+        for a in &summary.action_items {
+            md.push_str(&format!(
+                "| {} | {} | {} |{} |\n",
+                a.action,
+                a.owner.as_deref().unwrap_or("Not specified"),
+                a.deadline.as_deref().unwrap_or("Not specified"),
+                cite(&a.evidence)
+            ));
+        }
+        md.push('\n');
+    }
+    points(&mut md, "Risks and challenges", &summary.risks);
+    points(&mut md, "Open questions", &summary.open_questions);
+    if !summary.numbers.is_empty() {
+        md.push_str("## Important numbers\n\n");
+        for n in &summary.numbers {
+            md.push_str(&format!(
+                "- **{}** {}{}\n",
+                n.value,
+                n.context,
+                cite(&n.evidence)
+            ));
+        }
+        md.push('\n');
+    }
+    points(&mut md, "Next steps", &summary.next_steps);
+    if let Some(t) = &summary.takeaway {
+        md.push_str(&format!(
+            "## Final takeaway\n\n{}{}\n\n",
+            t.text,
+            cite(&t.evidence)
+        ));
+    }
+    if !thoughts.is_empty() {
+        md.push_str("## My thoughts\n\n");
+        for (ms, t) in thoughts {
+            md.push_str(&format!("- [{}] {t}\n", clock(*ms)));
+        }
+        md.push('\n');
+    }
+    md.push_str("## Transcript\n\n");
+    for s in segments {
+        md.push_str(&format!(
+            "[{}] **{}:** {}\n\n",
+            clock(s.start_ms),
+            s.speaker,
+            s.text
+        ));
+    }
+    md
 }
 
 pub fn validate(summary: Summary, segments: &[Segment]) -> Validated {
@@ -432,6 +636,30 @@ mod tests {
     }
 
     #[test]
+    fn spelled_out_numbers_support_digits() {
+        let v = validate(
+            Summary {
+                numbers: vec![
+                    NumberItem {
+                        value: "3".into(),
+                        context: "interviews".into(),
+                        evidence: vec!["s6".into()],
+                    },
+                    NumberItem {
+                        value: "4".into(),
+                        context: "invented".into(),
+                        evidence: vec!["s6".into()],
+                    },
+                ],
+                ..Default::default()
+            },
+            &golden_segments(),
+        );
+        assert_eq!(v.summary.numbers.len(), 1);
+        assert_eq!(v.summary.numbers[0].value, "3");
+    }
+
+    #[test]
     fn items_without_evidence_are_dropped_everywhere() {
         let v = validate(
             Summary {
@@ -461,6 +689,40 @@ mod tests {
             &golden_segments(),
         );
         assert_eq!(v.summary.next_steps[0].evidence, ["s7"]);
+    }
+
+    #[test]
+    fn prompt_and_markdown() {
+        let prompt = summary_prompt("English", "Latin");
+        assert!(prompt.starts_with("You produce evidence-grounded meeting notes"));
+        assert!(!prompt.contains("{output_language}"));
+        assert!(prompt.contains("\"action_items\""));
+        let segs = golden_segments();
+        let req = summary_request("Weekly", &segs, &[(5000, "ask about budget".into())]);
+        assert!(req.contains("\"id\":\"s4\"") && req.contains("ask about budget"));
+
+        let s = Summary {
+            overview: Overview {
+                title: "Weekly".into(),
+                ..Default::default()
+            },
+            action_items: vec![ActionItem {
+                action: "Review".into(),
+                owner: None,
+                deadline: Some("next Monday".into()),
+                evidence: vec!["s7".into()],
+            }],
+            ..Default::default()
+        };
+        let md = to_markdown(&s, &segs, &[(5000, "ask about budget".into())]);
+        assert!(
+            md.contains("| Review | Not specified | next Monday | [00:00:24] |"),
+            "{md}"
+        );
+        assert!(md.contains("- [00:00:05] ask about budget"));
+        assert!(md.contains("[00:00:04] **Me:** Sales increased by 12 percent."));
+        assert!(!md.contains("## Risks"), "empty sections are left out");
+        assert!(parse_summary("```json\n{\"overview\":{\"title\":\"x\",\"date\":null,\"duration_min\":null,\"participants\":[],\"purpose\":null},\"takeaway\":null}\n```").is_ok());
     }
 
     #[test]

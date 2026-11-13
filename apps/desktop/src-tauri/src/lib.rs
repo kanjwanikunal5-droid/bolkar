@@ -6,6 +6,7 @@ pub mod credentials;
 mod db;
 mod hotkey;
 mod insert;
+mod meeting;
 mod models;
 mod overlay;
 pub mod providers;
@@ -28,6 +29,177 @@ pub struct AppState {
     pub ctl: Mutex<Sender<Msg>>,
     pub hook_error: Mutex<Option<String>>,
     pub recorder: audio::Recorder,
+    pub meeting: Mutex<Option<(meeting::Recording, String)>>,
+}
+
+#[tauri::command]
+fn start_meeting(
+    state: State<AppState>,
+    mic: bool,
+    system: bool,
+    consent: bool,
+) -> Result<(), String> {
+    if !consent {
+        return Err("Please confirm that the participants know they are being recorded.".into());
+    }
+    let mut slot = state.meeting.lock().map_err(|e| e.to_string())?;
+    if slot.is_some() {
+        return Err("A meeting is already being recorded.".into());
+    }
+    let rec = meeting::Recording::start(&state.data_dir.join("meetings"), mic, system)?;
+    *slot = Some((rec, chrono::Utc::now().to_rfc3339()));
+    Ok(())
+}
+
+#[tauri::command]
+fn meeting_status(state: State<AppState>) -> Option<meeting::LiveStatus> {
+    state.meeting.lock().ok()?.as_ref().map(|(r, _)| r.status())
+}
+
+#[derive(Serialize)]
+struct MeetingResult {
+    id: String,
+    segments: Vec<app_core::summary::Segment>,
+    summary: Option<app_core::summary::Summary>,
+    /// Items the evidence check removed, for transparency.
+    dropped: Vec<String>,
+    markdown: String,
+    /// Why there is no summary, when there is none.
+    note: Option<String>,
+}
+
+/// Stops the recording, transcribes both tracks on this computer, and (if AI clean-up is set
+/// up) writes evidence-checked notes.
+#[tauri::command]
+async fn stop_meeting(
+    state: State<'_, AppState>,
+    title: String,
+    thoughts: Vec<(u64, String)>,
+) -> Result<MeetingResult, String> {
+    let (rec, started_at) = state
+        .meeting
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or("No meeting is being recorded.")?;
+    let finished = tauri::async_runtime::spawn_blocking(move || rec.stop())
+        .await
+        .map_err(|e| e.to_string())??;
+
+    let mut tracks = Vec::new();
+    if let Some(p) = &finished.mic_path {
+        tracks.push((PathBuf::from(p), "Me".to_string()));
+    }
+    if let Some(p) = &finished.system_path {
+        tracks.push((PathBuf::from(p), "Others".to_string()));
+    }
+    let (reply, rx) = channel();
+    state
+        .ctl
+        .lock()
+        .map_err(|e| e.to_string())?
+        .send(Msg::TranscribeMeeting { tracks, reply })
+        .map_err(|e| e.to_string())?;
+    let segments =
+        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string())?)
+            .await
+            .map_err(|e| e.to_string())??;
+
+    let title = if title.trim().is_empty() {
+        "Meeting".to_string()
+    } else {
+        title.trim().to_string()
+    };
+    let mut summary = None;
+    let mut dropped = Vec::new();
+    let mut note = None;
+    let mut provider = String::new();
+    if segments.is_empty() {
+        note = Some("Nothing was heard in the recording.".into());
+    } else if let Some(cfg) = ai_config(&state) {
+        provider = cfg.provider.clone();
+        let system = app_core::summary::summary_prompt(
+            "the language of the meeting",
+            "the script used in the transcript",
+        );
+        let user = app_core::summary::summary_request(&title, &segments, &thoughts);
+        let bytes = system.len() + user.len();
+        let segs = segments.clone();
+        // Notes are long, so allow far more time than for a dictation.
+        let answer = tauri::async_runtime::spawn_blocking(move || {
+            providers::chat(&cfg, &system, &user, std::time::Duration::from_secs(90))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Ok(conn) = state.db.lock() {
+            let outcome = answer
+                .as_ref()
+                .map(|_| "ok".to_string())
+                .unwrap_or_else(|e| e.to_string());
+            db::log_event(
+                &conn,
+                "upload",
+                &format!("{provider}: meeting transcript for notes, {bytes} bytes, {outcome}"),
+            );
+        }
+        match answer
+            .map_err(|e| e.to_string())
+            .and_then(|a| app_core::summary::parse_summary(&a.content))
+        {
+            Ok(raw) => {
+                let mut v = app_core::summary::validate(raw, &segs);
+                v.summary.overview.title = title.clone();
+                v.summary.overview.duration_min =
+                    Some((finished.duration_ms as f64 / 60000.0 * 10.0).round() / 10.0);
+                dropped = v.dropped;
+                summary = Some(v.summary);
+            }
+            Err(e) => {
+                note = Some(format!(
+                    "Notes could not be written ({e}). The transcript is below."
+                ))
+            }
+        }
+    } else {
+        note = Some(
+            "Turn on AI clean-up in Settings to get organised notes. The transcript is below."
+                .into(),
+        );
+    }
+
+    let empty = app_core::summary::Summary {
+        overview: app_core::summary::Overview {
+            title: title.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let markdown =
+        app_core::summary::to_markdown(summary.as_ref().unwrap_or(&empty), &segments, &thoughts);
+    if let Ok(conn) = state.db.lock() {
+        let json = summary.as_ref().and_then(|s| serde_json::to_string(s).ok());
+        db::save_meeting(
+            &conn,
+            &finished.id,
+            &title,
+            &started_at,
+            finished.duration_ms,
+            finished.mic_path.as_deref(),
+            finished.system_path.as_deref(),
+            &segments,
+            &thoughts,
+            json.as_deref(),
+            &provider,
+        )?;
+    }
+    Ok(MeetingResult {
+        id: finished.id,
+        segments,
+        summary,
+        dropped,
+        markdown,
+        note,
+    })
 }
 
 #[derive(Serialize)]
@@ -859,7 +1031,10 @@ pub fn run() {
             learn_terms,
             mic_status,
             set_cloud_asr,
-            pill_action
+            pill_action,
+            start_meeting,
+            meeting_status,
+            stop_meeting
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -896,6 +1071,7 @@ pub fn run() {
                 ctl: Mutex::new(ctl_tx),
                 hook_error: Mutex::new(hook_error),
                 recorder: recorder.clone(),
+                meeting: Mutex::new(None),
             });
             overlay::prepare(&handle);
             controller::spawn(handle.clone(), ctl_rx, recorder);

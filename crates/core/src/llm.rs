@@ -1,4 +1,4 @@
-//! AI clean-up support: prompt building, answer parsing and validation.
+﻿//! AI clean-up support: prompt building, answer parsing and validation.
 //!
 //! No network code lives here. The desktop app sends the request and hands the answer back
 //! to [`accept`]. An answer is used only if it passes every check; otherwise the caller falls
@@ -230,7 +230,7 @@ fn small_number(word: &str) -> Option<u64> {
 
 /// Every number the speaker said: digits as written, plus spelled-out numbers such as
 /// "fifty thousand" (50000) or "twenty five" (25).
-fn spoken_numbers(text: &str) -> HashSet<String> {
+pub(crate) fn spoken_numbers(text: &str) -> HashSet<String> {
     let mut found: HashSet<String> = NUMBER
         .find_iter(text)
         .map(|m| number_key(m.as_str()))
@@ -392,7 +392,11 @@ pub fn accept(
         rules_plain = rules_plain.replace(body.as_str(), " ");
     }
     let plain = |w: &str| w.to_lowercase().replace(['\u{2019}', '\''], "");
-    let out_set: HashSet<String> = out_words.iter().map(|w| plain(w)).collect();
+    // Counted, not just present: "Thank you. Thank you very much." must keep both.
+    let mut out_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for w in &out_words {
+        *out_counts.entry(plain(w)).or_default() += 1;
+    }
     let out_has_digits = checked.chars().any(|c| c.is_ascii_digit());
     // Grammar polish may legitimately swap a word or two; plain clean-up may not.
     let mut tolerance = if level == Level::Professional { 2 } else { 0 };
@@ -414,7 +418,11 @@ pub fn accept(
             let w = plain(m.as_str());
             let written_as_symbol = out_has_digits
                 && (small_number(&w).is_some() || NUMBER_WORDS.contains(&w.as_str()));
-            if out_set.contains(&w) || HESITATION_WORDS.contains(&w.as_str()) || written_as_symbol {
+            if HESITATION_WORDS.contains(&w.as_str()) || written_as_symbol {
+                continue;
+            }
+            if let Some(n) = out_counts.get_mut(&w).filter(|n| **n > 0) {
+                *n -= 1;
                 continue;
             }
             if tolerance == 0 {
@@ -435,7 +443,7 @@ static CORRECTION_CUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(actually|sorry|no,? wait|i mean|scratch that|correction|make that|nahi,? nahi|no,? no|matlab)\b").unwrap()
 });
 const HESITATION_WORDS: &[&str] = &["um", "umm", "uh", "uhh", "er", "erm", "hmm", "ah", "mm"];
-/// Words that may turn into digits or symbols: "fifty thousand rupees" -> "₹50,000".
+/// Words that may turn into digits or symbols: "fifty thousand rupees" -> "â‚¹50,000".
 const NUMBER_WORDS: &[&str] = &[
     "hundred", "thousand", "lakh", "lakhs", "crore", "crores", "million", "billion", "and",
     "percent", "per", "cent", "rupee", "rupees", "rs", "dollar", "dollars", "point",
@@ -625,6 +633,11 @@ mod tests {
         );
         assert!(matches!(
             check("Haan, main aa raha hoon.", "Main aa raha hoon."),
+            Err(Rejection::DroppedWord(_))
+        ));
+        // Repeats that were really said must stay.
+        assert!(matches!(
+            check("Thank you. Thank you very much.", "Thank you very much."),
             Err(Rejection::DroppedWord(_))
         ));
         // A cue word opening the dictation corrects nothing, so its words must stay.

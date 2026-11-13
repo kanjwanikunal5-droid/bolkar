@@ -292,6 +292,72 @@ pub fn last_dictation_id(conn: &Connection) -> Option<String> {
     .flatten()
 }
 
+/// Stores a finished meeting with its transcript, the user's notes and (if any) the summary.
+#[allow(clippy::too_many_arguments)]
+pub fn save_meeting(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    started_at: &str,
+    duration_ms: u64,
+    mic_path: Option<&str>,
+    system_path: Option<&str>,
+    segments: &[app_core::summary::Segment],
+    thoughts: &[(u64, String)],
+    summary_json: Option<&str>,
+    provider: &str,
+) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO meetings(id, title, type, attendees, languages, started_at, ended_at, duration_ms,
+            consent_confirmed, mic_track_path, system_track_path, status)
+         VALUES(?1, ?2, 'Meeting', '', '', ?3, ?4, ?5, 1, ?6, ?7, ?8)",
+        params![
+            id,
+            title,
+            started_at,
+            now(),
+            duration_ms as i64,
+            mic_path,
+            system_path,
+            if summary_json.is_some() { "summarised" } else { "transcribed" }
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    for s in segments {
+        tx.execute(
+            "INSERT INTO segments(id, meeting_id, track, speaker, start_ms, end_ms, text, is_final, engine)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 'local')",
+            params![
+                format!("{id}:{}", s.id),
+                id,
+                if s.speaker == "Me" { "mic" } else { "system" },
+                s.speaker,
+                s.start_ms as i64,
+                s.end_ms as i64,
+                s.text
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for (at, text) in thoughts {
+        tx.execute(
+            "INSERT INTO thoughts(id, meeting_id, at_ms, text, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![uuid::Uuid::new_v4().to_string(), id, *at as i64, text, now()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(json) = summary_json {
+        tx.execute(
+            "INSERT INTO summaries(id, meeting_id, version, created_at, provider, json, edited_json, is_current)
+             VALUES(?1, ?2, 1, ?3, ?4, ?5, NULL, 1)",
+            params![uuid::Uuid::new_v4().to_string(), id, now(), provider, json],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 /// Saves a hand-corrected text. The recogniser's original stays untouched in `raw_text`.
 pub fn update_final_text(conn: &Connection, id: &str, text: &str) -> Result<(), String> {
     let n = conn

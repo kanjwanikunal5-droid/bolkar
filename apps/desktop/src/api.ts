@@ -11,6 +11,7 @@ const READ_ONLY = new Set([
   "list_snippets",
   "last_dictation_id",
   "mic_status",
+  "meeting_status",
 ]);
 
 /**
@@ -167,6 +168,37 @@ export const api = {
   learnTerms: (items: [string, string][]) => invoke<void>("learn_terms", { items }),
   setCloudAsr: (on: boolean, consent: boolean) => invoke<void>("set_cloud_asr", { on, consent }),
   micStatus: () => invoke<{ open: boolean; level: number }>("mic_status"),
+};
+
+export interface MeetingLive {
+  recording: boolean;
+  seconds: number;
+  mic_level: number;
+  system_level: number;
+  problems: string[];
+}
+
+export interface Segment {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  speaker: string;
+  text: string;
+}
+
+export interface MeetingResult {
+  id: string;
+  segments: Segment[];
+  summary: unknown | null;
+  dropped: string[];
+  markdown: string;
+  note: string | null;
+}
+
+export const meetings = {
+  start: (mic: boolean, system: boolean, consent: boolean) => invoke<void>("start_meeting", { mic, system, consent }),
+  status: () => invoke<MeetingLive | null>("meeting_status"),
+  stop: (title: string, thoughts: [number, string][]) => invoke<MeetingResult>("stop_meeting", { title, thoughts }),
 };
 
 /** Tauri rejects with a plain string; show it as-is. */

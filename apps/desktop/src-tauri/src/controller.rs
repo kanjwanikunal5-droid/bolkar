@@ -36,6 +36,11 @@ pub enum Msg {
     Key(Action),
     SettingsChanged,
     UnloadModel,
+    /// Transcribe meeting tracks: (WAV path, speaker label such as "Me" or "Others").
+    TranscribeMeeting {
+        tracks: Vec<(PathBuf, String)>,
+        reply: Sender<Result<Vec<app_core::summary::Segment>, String>>,
+    },
     File {
         path: PathBuf,
         insert: bool,
@@ -207,6 +212,9 @@ impl Controller {
                 Some(Msg::Key(action)) => self.on_action(action),
                 Some(Msg::SettingsChanged) => self.apply_settings(),
                 Some(Msg::UnloadModel) => self.engine = None,
+                Some(Msg::TranscribeMeeting { tracks, reply }) => {
+                    let _ = reply.send(self.transcribe_meeting(&tracks));
+                }
                 Some(Msg::File {
                     path,
                     insert,
@@ -366,6 +374,51 @@ impl Controller {
             engine,
         });
         Ok(())
+    }
+
+    /// Meeting tracks -> time-stamped segments, on this computer. Each track is split at quiet
+    /// moments into pieces of at most ~30 s; silent pieces are skipped (no invented text).
+    fn transcribe_meeting(
+        &mut self,
+        tracks: &[(PathBuf, String)],
+    ) -> Result<Vec<app_core::summary::Segment>, String> {
+        self.ensure_engine()?;
+        let language = self.state().setting("language");
+        let (dictionary, _) = self.vocabulary();
+        let hint = dictionary.recogniser_hint(400);
+        let options = Options {
+            language: (language != "auto").then_some(language),
+            initial_prompt: (!hint.is_empty()).then_some(hint),
+            ..Default::default()
+        };
+        let mut segments = Vec::new();
+        for (path, speaker) in tracks {
+            let samples = asr_audio::read_wav_16k_mono(path)?;
+            for (start, piece) in crate::meeting::split_for_recognition(&samples) {
+                if !asr_audio::has_signal(piece) {
+                    continue;
+                }
+                let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+                let t = loaded.engine.transcribe(piece, &options)?;
+                let text = t.text.trim().to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                let start_ms = start as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE);
+                segments.push(app_core::summary::Segment {
+                    id: String::new(),
+                    start_ms,
+                    end_ms: start_ms + piece.len() as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE),
+                    speaker: speaker.clone(),
+                    text,
+                });
+            }
+        }
+        segments.sort_by_key(|s| s.start_ms);
+        for (i, s) in segments.iter_mut().enumerate() {
+            s.id = format!("s{}", i + 1);
+        }
+        Ok(segments)
     }
 
     /// The user's dictionary and snippets, read fresh for each dictation.
