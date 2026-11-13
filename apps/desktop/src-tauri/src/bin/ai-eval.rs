@@ -1,4 +1,4 @@
-//! Measures the AI clean-up path on the golden fixtures.
+﻿//! Measures the AI clean-up path on the golden fixtures.
 //!
 //!   ai-eval <provider> [model]       e.g.  ai-eval groq llama-3.1-8b-instant
 //!
@@ -66,6 +66,38 @@ fn main() {
         );
         std::process::exit(2);
     }
+    // --asr file.wav [file2.wav ...]: cloud speech-to-text speed check on test recordings.
+    if let Some(pos) = args.iter().position(|a| a == "--asr") {
+        for path in &args[pos + 1..] {
+            let samples =
+                app_asr::audio::read_wav_16k_mono(std::path::Path::new(path)).expect("wav");
+            let audio_ms = samples.len() as u64 * 1000 / 16_000;
+            for run in 1..=3 {
+                match providers::transcribe(
+                    &cfg,
+                    providers::wav_bytes(&samples),
+                    Some("en"),
+                    None,
+                    Duration::from_secs(30),
+                ) {
+                    Ok((text, took)) => println!(
+                        "{path} audio {audio_ms} ms | run {run}: {} ms | {text}",
+                        took.as_millis()
+                    ),
+                    Err(e) => println!("{path} run {run}: error {e}"),
+                }
+                std::thread::sleep(Duration::from_millis(3500));
+            }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--models") {
+        match providers::list_models(&cfg, Duration::from_secs(20)) {
+            Ok(ids) => ids.iter().for_each(|id| println!("{id}")),
+            Err(e) => eprintln!("could not list models: {e}"),
+        }
+        return;
+    }
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../spec/fixtures");
     let mut cases = Vec::new();
     for entry in std::fs::read_dir(dir).expect("fixtures") {
@@ -77,6 +109,21 @@ fn main() {
     }
     // LITERAL cases never use AI.
     cases.retain(|c| c.level != Some(Level::Literal));
+    cases.sort_by(|a, b| a.id.cmp(&b.id));
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse::<usize>().ok())
+    };
+    // --limit N: an even sample of N cases across all categories.
+    if let Some(limit) = flag("--limit").filter(|l| *l < cases.len()) {
+        let step = cases.len() as f64 / limit as f64;
+        cases = (0..limit)
+            .map(|i| cases.swap_remove(((i as f64 * step) as usize).min(cases.len() - 1)))
+            .collect();
+    }
+    let pause = Duration::from_millis(flag("--sleep").unwrap_or(2200) as u64);
 
     let (mut passed, mut caught, mut errors) = (0usize, 0usize, 0usize);
     let mut latencies = Vec::new();
@@ -88,6 +135,7 @@ fn main() {
         let dictionary = Dictionary::new(case.dictionary.clone());
         let snippets = SnippetSet::new(case.snippets.clone());
         let prepared = pipeline::prepare(&case.input, &settings, &dictionary, &snippets);
+        let rules_text = pipeline::finish(&prepared, &settings).text;
         let req = llm::build_cleanup(
             &prepared,
             settings.level,
@@ -109,6 +157,7 @@ fn main() {
                         &case.input,
                         dictionary.terms(),
                         settings.level,
+                        &rules_text,
                     )
                 }) {
                     Ok(text) if loose(&text) == loose(&case.expected) => {
@@ -117,8 +166,14 @@ fn main() {
                     }
                     Ok(text) => format!("DIFFERENT got {text:?}"),
                     Err(why) => {
+                        // What the app really does: fall back to the rules.
                         caught += 1;
-                        format!("REJECTED ({why}) -> rules used")
+                        if loose(&rules_text) == loose(&case.expected) {
+                            passed += 1;
+                            "pass".into()
+                        } else {
+                            format!("REJECTED ({why}) -> rules used: {rules_text:?}")
+                        }
                     }
                 }
             }
@@ -131,7 +186,7 @@ fn main() {
         }
         if i + 1 < cases.len() {
             // Stay well inside free-tier request limits.
-            std::thread::sleep(Duration::from_millis(2200));
+            std::thread::sleep(pause);
         }
     }
     latencies.sort_unstable();
@@ -145,7 +200,7 @@ fn main() {
     println!();
     println!("provider {} model {}", cfg.provider, cfg.model);
     println!(
-        "cases {total} | match {passed} ({:.1}%) | rejected by checks {caught} | errors {errors}",
+        "cases {total} | final text matches {passed} ({:.1}%) | AI answers rejected (rules used) {caught} | errors {errors}",
         passed as f64 * 100.0 / total.max(1) as f64
     );
     println!(

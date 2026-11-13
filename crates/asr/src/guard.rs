@@ -103,6 +103,17 @@ pub fn collapse_repeats(text: &str) -> String {
     out.join(" ")
 }
 
+/// Guard for text from a cloud recogniser, which returns no per-segment confidence.
+/// `quiet` = the recording was very quiet overall, which is when Whisper invents phrases.
+pub fn filter_text(text: &str, quiet: bool) -> String {
+    let cleaned = BRACKETED.replace_all(text, " ");
+    let cleaned = SPACES.replace_all(cleaned.trim(), " ").into_owned();
+    if cleaned.is_empty() || (quiet && is_silence_phrase(&cleaned)) {
+        return String::new();
+    }
+    collapse_repeats(&cleaned)
+}
+
 /// Returns the kept text and the list of dropped segment texts.
 pub fn filter(segments: &[Segment]) -> (String, Vec<String>) {
     let mut kept: Vec<String> = Vec::new();
@@ -165,6 +176,16 @@ mod tests {
             seg(" by Friday.", 0.02),
         ]);
         assert_eq!(text, "Please send the report by Friday.");
+    }
+
+    #[test]
+    fn cloud_text_guard() {
+        assert_eq!(filter_text(" Thank you for watching! ", true), "");
+        assert_eq!(filter_text("Thank you.", false), "Thank you.");
+        assert_eq!(
+            filter_text("[Music] Send it today.", false),
+            "Send it today."
+        );
     }
 
     #[test]

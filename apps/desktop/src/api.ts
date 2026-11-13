@@ -109,6 +109,9 @@ export interface AiStatus {
   has_key: boolean;
   consent: boolean;
   active: boolean;
+  cloud_asr: boolean;
+  cloud_asr_possible: boolean;
+  cloud_asr_note: string;
 }
 
 export interface Term {
@@ -162,6 +165,7 @@ export const api = {
   lastDictationId: () => invoke<string | null>("last_dictation_id"),
   fixDictation: (id: string, text: string) => invoke<Suggestion[]>("fix_dictation", { id, text }),
   learnTerms: (items: [string, string][]) => invoke<void>("learn_terms", { items }),
+  setCloudAsr: (on: boolean, consent: boolean) => invoke<void>("set_cloud_asr", { on, consent }),
   micStatus: () => invoke<{ open: boolean; level: number }>("mic_status"),
 };
 

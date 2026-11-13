@@ -138,6 +138,7 @@ pub enum Rejection {
     NewEmailOrLink(String),
     TooManyNewWords { new: usize, of: usize },
     Snippet(String),
+    DroppedWord(String),
 }
 
 impl std::fmt::Display for Rejection {
@@ -160,6 +161,7 @@ impl std::fmt::Display for Rejection {
                 )
             }
             Self::Snippet(e) => write!(f, "answer damaged a saved snippet ({e})"),
+            Self::DroppedWord(w) => write!(f, "answer dropped a spoken word: {w}"),
         }
     }
 }
@@ -321,6 +323,7 @@ pub fn accept(
     raw: &str,
     allowed: &[String],
     level: Level,
+    rules_text: &str,
 ) -> Result<String, Rejection> {
     let out = reply.text.trim();
     if out.is_empty() {
@@ -339,6 +342,7 @@ pub fn accept(
 
     // Snippet bodies are checked by token, not by content.
     let checked = TOKEN.replace_all(out, " ").into_owned();
+    let checked = LIST_MARKER.replace_all(&checked, "").into_owned();
     let source = format!("{raw}\n{sent}\n{}", allowed.join("\n"));
 
     let numbers = spoken_numbers(&source);
@@ -381,11 +385,64 @@ pub fn accept(
         }
     }
 
+    // The model must not drop words the rules kept, except hesitation sounds and inside a
+    // self-correction (where dropping the corrected part is the whole point).
+    let mut rules_plain = rules_text.to_string();
+    for body in prepared.protected.bodies() {
+        rules_plain = rules_plain.replace(body.as_str(), " ");
+    }
+    let plain = |w: &str| w.to_lowercase().replace(['\u{2019}', '\''], "");
+    let out_set: HashSet<String> = out_words.iter().map(|w| plain(w)).collect();
+    let out_has_digits = checked.chars().any(|c| c.is_ascii_digit());
+    // Grammar polish may legitimately swap a word or two; plain clean-up may not.
+    let mut tolerance = if level == Level::Professional { 2 } else { 0 };
+    let sentences: Vec<&str> = SENTENCE_SPLIT.split(&rules_plain).collect();
+    for (i, sentence) in sentences.iter().enumerate() {
+        // A cue only corrects something that came before it: "I mean well..." or
+        // "Actually, the meeting went well." at the very start corrects nothing.
+        let cue_after_something = CORRECTION_CUE
+            .find(sentence)
+            .is_some_and(|m| i > 0 || !sentence[..m.start()].trim().is_empty());
+        let correction_here = cue_after_something
+            || sentences
+                .get(i + 1)
+                .is_some_and(|next| CORRECTION_CUE.is_match(next));
+        if correction_here {
+            continue;
+        }
+        for m in WORD.find_iter(sentence) {
+            let w = plain(m.as_str());
+            let written_as_symbol = out_has_digits
+                && (small_number(&w).is_some() || NUMBER_WORDS.contains(&w.as_str()));
+            if out_set.contains(&w) || HESITATION_WORDS.contains(&w.as_str()) || written_as_symbol {
+                continue;
+            }
+            if tolerance == 0 {
+                return Err(Rejection::DroppedWord(m.as_str().to_string()));
+            }
+            tolerance -= 1;
+        }
+    }
+
     prepared
         .protected
         .restore_tokens(out)
         .map_err(Rejection::Snippet)
 }
+
+static SENTENCE_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.?!\n]+\s*").unwrap());
+static CORRECTION_CUE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(actually|sorry|no,? wait|i mean|scratch that|correction|make that|nahi,? nahi|no,? no|matlab)\b").unwrap()
+});
+const HESITATION_WORDS: &[&str] = &["um", "umm", "uh", "uhh", "er", "erm", "hmm", "ah", "mm"];
+/// Words that may turn into digits or symbols: "fifty thousand rupees" -> "₹50,000".
+const NUMBER_WORDS: &[&str] = &[
+    "hundred", "thousand", "lakh", "lakhs", "crore", "crores", "million", "billion", "and",
+    "percent", "per", "cent", "rupee", "rupees", "rs", "dollar", "dollars", "point",
+];
+/// Numbered-list markers at the start of a line ("1. ", "2) ") are formatting, not facts.
+static LIST_MARKER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*\d{1,2}[.)]\s").unwrap());
 
 #[cfg(test)]
 mod tests {
@@ -411,7 +468,9 @@ mod tests {
     }
 
     fn check(raw: &str, answer: &str) -> Result<String, Rejection> {
-        accept(&reply(answer), &prep(raw), raw, &[], Level::Light)
+        let p = prep(raw);
+        let rules = crate::pipeline::finish(&p, &Settings::default()).text;
+        accept(&reply(answer), &p, raw, &[], Level::Light, &rules)
     }
 
     #[test]
@@ -520,10 +579,19 @@ mod tests {
         let p = prepare(raw, &Settings::default(), &Dictionary::default(), &snippets);
         let req = build_cleanup(&p, Level::Light, AppCategory::Chat, "en", &[]);
         assert!(req.user.contains("[[S1]]"));
-        let ok = accept(&reply("Book here: [[S1]]"), &p, raw, &[], Level::Light).unwrap();
+        let rules = crate::pipeline::finish(&p, &Settings::default()).text;
+        let ok = accept(
+            &reply("Book here: [[S1]]"),
+            &p,
+            raw,
+            &[],
+            Level::Light,
+            &rules,
+        )
+        .unwrap();
         assert_eq!(ok, "Book here: https://cal.example/k");
         assert!(matches!(
-            accept(&reply("Book here."), &p, raw, &[], Level::Light),
+            accept(&reply("Book here."), &p, raw, &[], Level::Light, &rules),
             Err(Rejection::Snippet(_))
         ));
     }
@@ -532,14 +600,53 @@ mod tests {
     fn dictionary_terms_count_as_spoken() {
         let raw = "the ebitda margin improved";
         let allowed = vec!["EBITDA".to_string()];
+        let p = prep(raw);
+        let rules = crate::pipeline::finish(&p, &Settings::default()).text;
         assert!(accept(
             &reply("The EBITDA margin improved."),
-            &prep(raw),
+            &p,
             raw,
             &allowed,
-            Level::Light
+            Level::Light,
+            &rules
         )
         .is_ok());
+    }
+
+    #[test]
+    fn dropping_meaningful_words_is_rejected() {
+        // Seen with real models: "you know" here carries meaning and the rules kept it.
+        assert_eq!(
+            check(
+                "I like the new dashboard and you know the team.",
+                "I like the new dashboard and the team."
+            ),
+            Err(Rejection::DroppedWord("you".into()))
+        );
+        assert!(matches!(
+            check("Haan, main aa raha hoon.", "Main aa raha hoon."),
+            Err(Rejection::DroppedWord(_))
+        ));
+        // A cue word opening the dictation corrects nothing, so its words must stay.
+        assert!(matches!(
+            check("I mean well, but I was late.", "I was late."),
+            Err(Rejection::DroppedWord(_))
+        ));
+        assert!(matches!(
+            check("Actually, the meeting went well.", "The meeting went well."),
+            Err(Rejection::DroppedWord(_))
+        ));
+        // Inside a self-correction, dropping the corrected part is allowed.
+        assert_eq!(
+            check("Send it to Rahul, sorry, to Priya.", "Send it to Priya.").unwrap(),
+            "Send it to Priya."
+        );
+    }
+
+    #[test]
+    fn numbered_lists_are_not_invented_numbers() {
+        let raw = "Steps. First, open the file. Second, check the totals.";
+        assert!(check(raw, "Steps:\n1. Open the file\n2. Check the totals").is_ok());
     }
 
     #[test]

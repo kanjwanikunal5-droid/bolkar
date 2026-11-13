@@ -1,10 +1,13 @@
 //! Local speech recognition. Stage 1 ships one engine: whisper.cpp.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 pub mod audio;
 pub mod guard;
@@ -44,11 +47,61 @@ pub struct Options {
     /// Vocabulary hints (dictionary terms). Whisper reads only the last ~224 tokens.
     pub initial_prompt: Option<String>,
     pub threads: Option<i32>,
+    /// Size the model's audio window to the clip instead of the full 30 s. Much faster for
+    /// short dictations; can reduce accuracy, so it is measured before being turned on.
+    pub fit_window: bool,
+}
+
+/// The graphics device to run on: a dedicated card if there is one.
+///
+/// Measured on the owner's laptop (13 Nov 2026), Vulkan lists the built-in AMD Radeon 740M
+/// first; running there took 2.4 s for an 8 s clip, the RTX 4050 took 0.67 s.
+pub fn best_gpu() -> Option<(i32, String)> {
+    #[cfg(feature = "vulkan")]
+    {
+        let devices = whisper_rs::vulkan::list_devices();
+        let score = |name: &str| {
+            let n = name.to_lowercase();
+            let dedicated = n.contains("nvidia")
+                || n.contains("geforce")
+                || n.contains("rtx")
+                || n.contains("quadro")
+                || n.contains("radeon rx")
+                || n.contains("radeon pro")
+                || n.contains("arc");
+            let software = n.contains("llvmpipe")
+                || n.contains("swiftshader")
+                || n.contains("microsoft basic");
+            (if software {
+                0
+            } else if dedicated {
+                2
+            } else {
+                1
+            }) as u8
+        };
+        return devices
+            .iter()
+            .max_by_key(|d| (score(&d.name), d.vram.total))
+            .filter(|d| score(&d.name) > 0)
+            .map(|d| (d.id, d.name.clone()));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// Encoder frames for a clip: 50 per second, plus a margin, capped at Whisper's 1500.
+pub fn fitted_audio_ctx(samples: usize) -> i32 {
+    let frames = samples as f64 / f64::from(SAMPLE_RATE) * 50.0;
+    ((frames * 1.1) as i32 + 128).clamp(256, 1500)
 }
 
 pub struct WhisperEngine {
+    /// Kept alive for as long as the state that was created from it.
+    #[allow(dead_code)]
     ctx: WhisperContext,
     pub gpu: bool,
+    state: RefCell<WhisperState>,
 }
 
 impl WhisperEngine {
@@ -59,10 +112,40 @@ impl WhisperEngine {
         let gpu = use_gpu && cfg!(feature = "vulkan");
         let mut params = WhisperContextParameters::default();
         params.use_gpu(gpu);
+        if gpu {
+            if let Some((id, _)) = best_gpu() {
+                params.gpu_device(id);
+            }
+        }
+        // Flash attention: same results, less work on the graphics card.
+        params.flash_attn(gpu);
         let path = model.to_str().ok_or("model path is not valid UTF-8")?;
         let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| format!("could not load model: {e}"))?;
-        Ok(Self { ctx, gpu })
+        // One working state, reused by every dictation (creating it allocates GPU memory).
+        let state = ctx
+            .create_state()
+            .map_err(|e| format!("could not start recogniser: {e}"))?;
+        Ok(Self {
+            ctx,
+            gpu,
+            state: RefCell::new(state),
+        })
+    }
+
+    /// Runs the model once on a short quiet tone so the graphics card prepares its programs
+    /// now, not during the user's first dictation. The output is discarded.
+    pub fn warm_up(&self) {
+        let tone: Vec<f32> = (0..(SAMPLE_RATE as usize * 3 / 2))
+            .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin() * 0.01)
+            .collect();
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("en"));
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        let _ = self.state.borrow_mut().full(params, &tone);
     }
 
     /// Transcribes 16 kHz mono audio.
@@ -89,10 +172,7 @@ impl WhisperEngine {
         };
 
         let started = Instant::now();
-        let mut state = self
-            .ctx
-            .create_state()
-            .map_err(|e| format!("could not start recogniser: {e}"))?;
+        let mut state = self.state.borrow_mut();
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(options.language.as_deref());
@@ -114,6 +194,9 @@ impl WhisperEngine {
         }
         if let Some(t) = options.threads {
             params.set_n_threads(t);
+        }
+        if options.fit_window {
+            params.set_audio_ctx(fitted_audio_ctx(samples.len()));
         }
 
         state

@@ -1,26 +1,45 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { PillState } from "./api";
 import "./styles.css";
 
 const HIDDEN: PillState = { state: "hidden", message: "", level: 0, seconds: 0, hands_free: false, engine: "" };
+const BARS = 9;
 
-function clock(seconds: number) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-/** Five bars whose height follows the microphone level. */
-function Bars({ level }: { level: number }) {
-  // Speech RMS is small (about 0.02 to 0.2), so use a square-root scale to make it visible.
-  const strength = Math.min(1, Math.sqrt(level) * 2.2);
-  const shape = [0.55, 0.8, 1, 0.8, 0.55];
+/**
+ * Live waveform: each bar follows the microphone level with its own small offset, so the
+ * shape moves like speech instead of pulsing as one block. Falls back to a gentle idle shimmer.
+ */
+function Wave({ level, busy }: { level: number; busy: boolean }) {
+  const [heights, setHeights] = useState<number[]>(() => Array(BARS).fill(0.15));
+  const levelRef = useRef(level);
+  levelRef.current = level;
+  useEffect(() => {
+    let frame = 0;
+    let t = 0;
+    const tick = () => {
+      t += 1;
+      // Speech RMS is small (about 0.01 to 0.2): square-root scale makes it visible.
+      const strength = busy ? 0.35 : Math.min(1, Math.sqrt(levelRef.current) * 2.6);
+      setHeights((prev) =>
+        prev.map((h, i) => {
+          const centre = 1 - Math.abs(i - (BARS - 1) / 2) / ((BARS - 1) / 2 + 1);
+          const wobble = 0.55 + 0.45 * Math.sin(t / (busy ? 6 : 3.2) + i * 1.3);
+          const target = Math.max(0.12, strength * (0.35 + 0.65 * centre) * wobble);
+          return h + (target - h) * 0.35;
+        }),
+      );
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [busy]);
   return (
-    <div className="bars" aria-hidden="true">
-      {shape.map((f, i) => (
-        <span key={i} style={{ height: `${4 + strength * f * 22}px` }} />
+    <div className={`wave ${busy ? "busy" : ""}`} aria-hidden="true">
+      {heights.map((h, i) => (
+        <span key={i} style={{ height: `${Math.round(4 + h * 22)}px` }} />
       ))}
     </div>
   );
@@ -37,19 +56,37 @@ function Pill() {
 
   if (pill.state === "hidden") return null;
   const listening = pill.state === "listening";
-  const text = listening
-    ? pill.message || (pill.hands_free ? "Listening (hands-free)" : "Listening")
-    : pill.state === "done"
-      ? `${pill.message} ✓`
-      : pill.message;
+  const busy = pill.state === "transcribing" || pill.state === "polishing";
+  const act = (action: "cancel" | "finish") => void invoke("pill_action", { action });
+
+  // Results and errors: a short message in the same capsule.
+  if (!listening && !busy) {
+    return (
+      <div className="capsule-row" role="status" aria-live="polite">
+        <div className={`capsule message ${pill.state}`}>
+          {pill.state === "done" && <span className="tick">{"✓"}</span>}
+          <span>{pill.message}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className={`pill ${pill.state}`} role="status" aria-live="polite">
-      {listening && <span className="dot" aria-hidden="true" />}
-      {listening && <Bars level={pill.level} />}
-      <span className="msg">{text}</span>
-      {listening && <span>{clock(pill.seconds)}</span>}
-      {pill.engine && <span className="engine">{pill.engine}</span>}
+    <div className="capsule-row" role="status" aria-live="polite" aria-label={listening ? "Listening" : "Working on your text"}>
+      {listening && (
+        <button className="round cancel" title="Cancel (Esc)" aria-label="Cancel" onClick={() => act("cancel")}>
+          {"✕"}
+        </button>
+      )}
+      <div className={`capsule ${busy ? "working" : ""}`}>
+        <Wave level={pill.level} busy={busy} />
+        {listening && pill.message && <span className="warn">{pill.message}</span>}
+      </div>
+      {listening && (
+        <button className="round finish" title="Finish" aria-label="Finish" onClick={() => act("finish")}>
+          {"✓"}
+        </button>
+      )}
     </div>
   );
 }

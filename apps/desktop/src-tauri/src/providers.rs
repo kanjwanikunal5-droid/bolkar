@@ -1,4 +1,4 @@
-//! AI clean-up providers. All of them speak the OpenAI-compatible "chat completions" API,
+﻿//! AI clean-up providers. All of them speak the OpenAI-compatible "chat completions" API,
 //! so one client covers Groq, Gemini, a local Ollama and any compatible server.
 
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ pub const PRESETS: &[Preset] = &[
         id: "groq",
         name: "Groq (free tier, your own key)",
         base_url: "https://api.groq.com/openai/v1",
-        model: "llama-3.1-8b-instant",
+        model: "qwen/qwen3.8-27b",
         needs_key: true,
         key_url: "https://console.groq.com/keys",
         data_note: "The text of each dictation is sent to Groq's servers to be cleaned up. Free \
@@ -95,6 +95,158 @@ impl std::fmt::Display for CallError {
     }
 }
 
+/// Speech-to-text in the cloud (OpenAI-compatible `POST /audio/transcriptions`).
+/// `wav` is a complete WAV file. Returns the text and the time taken.
+pub fn transcribe(
+    cfg: &Config,
+    wav: Vec<u8>,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    timeout: Duration,
+) -> Result<(String, Duration), CallError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| CallError::Network(e.to_string()))?;
+    let file = reqwest::blocking::multipart::Part::bytes(wav)
+        .file_name("dictation.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| CallError::Network(e.to_string()))?;
+    let mut form = reqwest::blocking::multipart::Form::new()
+        .part("file", file)
+        .text("model", cfg.model.clone())
+        .text("temperature", "0")
+        .text("response_format", "json");
+    if let Some(l) = language {
+        form = form.text("language", l.to_string());
+    }
+    if let Some(p) = prompt.filter(|p| !p.is_empty()) {
+        form = form.text("prompt", p.to_string());
+    }
+    let mut request = client
+        .post(format!(
+            "{}/audio/transcriptions",
+            cfg.base_url.trim_end_matches('/')
+        ))
+        .multipart(form);
+    if let Some(key) = cfg.key.as_deref().filter(|k| !k.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let started = Instant::now();
+    let response = request.send().map_err(|e| {
+        if e.is_timeout() {
+            CallError::Timeout
+        } else {
+            CallError::Network(e.to_string())
+        }
+    })?;
+    let status = response.status().as_u16();
+    let text = response.text().map_err(|e| {
+        if e.is_timeout() {
+            CallError::Timeout
+        } else {
+            CallError::Network(e.to_string())
+        }
+    })?;
+    match status {
+        200..=299 => {}
+        401 | 403 => return Err(CallError::BadKey),
+        429 => return Err(CallError::RateLimited),
+        _ => return Err(CallError::Http(status, text.chars().take(200).collect())),
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| CallError::BadAnswer(e.to_string()))?;
+    let out = json["text"]
+        .as_str()
+        .ok_or_else(|| CallError::BadAnswer("no text".into()))?
+        .trim()
+        .to_string();
+    Ok((out, started.elapsed()))
+}
+
+/// Encodes 16 kHz mono samples as a 16-bit WAV file in memory.
+pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut v = Vec::with_capacity(44 + data_len as usize);
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(36 + data_len).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    v.extend_from_slice(&1u16.to_le_bytes()); // mono
+    v.extend_from_slice(&16_000u32.to_le_bytes());
+    v.extend_from_slice(&32_000u32.to_le_bytes()); // byte rate
+    v.extend_from_slice(&2u16.to_le_bytes()); // block align
+    v.extend_from_slice(&16u16.to_le_bytes()); // bits
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        v.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    v
+}
+
+/// Model ids the provider currently offers to this key (OpenAI-compatible `GET /models`).
+pub fn list_models(cfg: &Config, timeout: Duration) -> Result<Vec<String>, CallError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| CallError::Network(e.to_string()))?;
+    let mut request = client.get(format!("{}/models", cfg.base_url.trim_end_matches('/')));
+    if let Some(key) = cfg.key.as_deref().filter(|k| !k.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let response = request.send().map_err(|e| {
+        if e.is_timeout() {
+            CallError::Timeout
+        } else {
+            CallError::Network(e.to_string())
+        }
+    })?;
+    let status = response.status().as_u16();
+    let text = response
+        .text()
+        .map_err(|e| CallError::Network(e.to_string()))?;
+    match status {
+        200..=299 => {}
+        401 | 403 => return Err(CallError::BadKey),
+        429 => return Err(CallError::RateLimited),
+        _ => return Err(CallError::Http(status, text.chars().take(200).collect())),
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| CallError::BadAnswer(e.to_string()))?;
+    let mut ids: Vec<String> = json["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    Ok(ids)
+}
+
+/// Text models suitable for clean-up, in order of preference, among those offered.
+/// Speech, guard and image models are skipped.
+pub fn pick_cleanup_model(available: &[String], preferred: &[&str]) -> Option<String> {
+    let usable = |id: &str| {
+        let l = id.to_lowercase();
+        !(l.contains("whisper")
+            || l.contains("guard")
+            || l.contains("tts")
+            || l.contains("vision")
+            || l.contains("embed")
+            || l.contains("orpheus")
+            || l.contains("playai"))
+    };
+    preferred
+        .iter()
+        .find(|p| available.iter().any(|a| a == *p))
+        .map(|p| p.to_string())
+        .or_else(|| available.iter().find(|a| usable(a)).cloned())
+}
+
 pub struct Answer {
     pub content: String,
     pub elapsed: Duration,
@@ -118,6 +270,12 @@ pub fn chat(
     if cfg.model.starts_with("openai/gpt-oss") {
         // Reasoning models: keep thinking short so the answer comes back quickly.
         body["reasoning_effort"] = serde_json::json!("low");
+    }
+    if cfg.model.contains("qwen3") {
+        // Qwen 3 "thinks" before answering by default; switch that off for speed and keep
+        // any reasoning out of the answer text.
+        body["reasoning_effort"] = serde_json::json!("none");
+        body["reasoning_format"] = serde_json::json!("hidden");
     }
     let payload = body.to_string();
     let client = reqwest::blocking::Client::builder()

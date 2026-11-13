@@ -43,8 +43,13 @@ fn main() -> ExitCode {
         }
     };
     let load_ms = load_started.elapsed().as_millis();
+    if engine.gpu {
+        println!("device: {:?}", app_asr::best_gpu());
+    }
     let options = Options {
         language: lang,
+        fit_window: args.iter().any(|a| a == "--fit"),
+        initial_prompt: flag_value("--prompt"),
         ..Default::default()
     };
 

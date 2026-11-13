@@ -1,4 +1,4 @@
-﻿//! Desktop app: system-wide dictation for Windows.
+//! Desktop app: system-wide dictation for Windows.
 
 mod audio;
 mod controller;
@@ -36,6 +36,48 @@ struct MicStatus {
     open: bool,
     /// Latest input level, 0..1.
     level: f32,
+}
+
+/// Windows 11 runs background apps in "efficiency mode", which slows the processor work
+/// around speech recognition. A dictation app is in the background by design (the user is in
+/// another app), so it opts out.
+fn disable_power_throttling() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_STATE,
+    };
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0, // 0 = do not throttle
+    };
+    unsafe {
+        let _ = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            &state as *const _ as *const _,
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+    }
+}
+
+/// The pill's buttons: "cancel" (✕) or "finish" (✓).
+#[tauri::command]
+fn pill_action(state: State<AppState>, action: String) -> Result<(), String> {
+    let action = match action.as_str() {
+        "cancel" => hotkey::Action::Cancel,
+        "finish" => hotkey::Action::HandsFreeStop,
+        _ => return Err("unknown pill action".into()),
+    };
+    // Keep the keyboard state machine in step with a stop that did not come from a key.
+    hotkey::force_idle();
+    state
+        .ctl
+        .lock()
+        .map_err(|e| e.to_string())?
+        .send(Msg::Key(action))
+        .map_err(|e| e.to_string())
 }
 
 /// For the live microphone meter in Settings.
@@ -114,6 +156,85 @@ pub fn ai_config(state: &AppState) -> Option<providers::Config> {
     })
 }
 
+const CLOUD_ASR: &str = "cloud_asr";
+/// Consent for sending audio is recorded separately from consent for sending text.
+const CLOUD_ASR_CONSENT: &str = "groq-asr";
+const CLOUD_ASR_MODEL: &str = "whisper-large-v3";
+const CLOUD_ASR_NOTE: &str = "The audio of each dictation is sent to Groq for speech recognition. \
+     Free accounts have daily limits (about 8 hours of audio per day). Read Groq's privacy policy \
+     before agreeing.";
+/// Clean-up models in order of preference (measured 13 Nov 2026: qwen3.8-27b answered in a
+/// median 0.27 s, gpt-oss-20b in 0.70 s).
+const PREFERRED_CLEANUP_MODELS: &[&str] = &[
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+];
+
+/// Cloud speech recognition, only when switched on, agreed to, and a Groq key exists.
+pub fn asr_config(state: &AppState) -> Option<providers::Config> {
+    let on = {
+        let conn = state.db.lock().ok()?;
+        db::get_setting(&conn, CLOUD_ASR).as_deref() == Some("on")
+            && db::has_consent(&conn, CLOUD_ASR_CONSENT)
+    };
+    if !on {
+        return None;
+    }
+    let preset = providers::preset("groq")?;
+    Some(providers::Config {
+        provider: "groq".into(),
+        base_url: preset.base_url.to_string(),
+        model: CLOUD_ASR_MODEL.into(),
+        key: Some(credentials::load("groq")?),
+    })
+}
+
+/// If the configured clean-up model is no longer offered, picks a current one, saves it and
+/// returns it. Returns None when the model is fine or the list cannot be fetched.
+pub fn heal_ai_model(state: &AppState, cfg: &providers::Config) -> Option<String> {
+    let available = providers::list_models(cfg, std::time::Duration::from_secs(5)).ok()?;
+    if available.contains(&cfg.model) {
+        return None;
+    }
+    let pick = providers::pick_cleanup_model(&available, PREFERRED_CLEANUP_MODELS)?;
+    let conn = state.db.lock().ok()?;
+    db::set_setting(&conn, AI_MODEL, &pick).ok()?;
+    db::log_event(
+        &conn,
+        "info",
+        &format!(
+            "clean-up model {} is no longer offered; switched to {pick}",
+            cfg.model
+        ),
+    );
+    Some(pick)
+}
+
+/// Turns cloud speech recognition on or off. Turning it on needs the separate consent.
+#[tauri::command]
+fn set_cloud_asr(state: State<AppState>, on: bool, consent: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if !on {
+        db::revoke_consent(&conn, CLOUD_ASR_CONSENT)?;
+        return db::set_setting(&conn, CLOUD_ASR, "off");
+    }
+    if !consent {
+        return Err("Please tick the box to agree before sending audio.".into());
+    }
+    if credentials::load("groq").is_none() {
+        return Err("Save your Groq key in AI clean-up first.".into());
+    }
+    db::record_consent(
+        &conn,
+        CLOUD_ASR_CONSENT,
+        "https://api.groq.com/openai/v1",
+        CLOUD_ASR_MODEL,
+        CLOUD_ASR_NOTE,
+    )?;
+    db::set_setting(&conn, CLOUD_ASR, "on")
+}
+
 fn default_setting(key: &str) -> &'static str {
     SETTINGS
         .iter()
@@ -131,6 +252,11 @@ struct AiStatus {
     consent: bool,
     /// True when dictations are actually being sent for AI clean-up.
     active: bool,
+    /// Cloud speech recognition is on (audio goes to Groq).
+    cloud_asr: bool,
+    /// A Groq key exists, so cloud speech recognition can be offered.
+    cloud_asr_possible: bool,
+    cloud_asr_note: &'static str,
 }
 
 #[tauri::command]
@@ -150,6 +276,9 @@ fn get_ai(state: State<AppState>) -> AiStatus {
         presets: providers::PRESETS,
         has_key: provider != "none" && credentials::load(&provider).is_some(),
         active: ai_config(&state).is_some(),
+        cloud_asr: asr_config(&state).is_some(),
+        cloud_asr_possible: credentials::load("groq").is_some(),
+        cloud_asr_note: CLOUD_ASR_NOTE,
         provider,
         model,
         base_url,
@@ -225,7 +354,11 @@ struct AiTest {
 /// Sends one fixed sample sentence (no personal data) to check the key and the speed.
 #[tauri::command]
 async fn test_ai(state: State<'_, AppState>) -> Result<AiTest, String> {
-    let cfg = ai_config(&state).ok_or("AI clean-up is not set up yet.")?;
+    let mut cfg = ai_config(&state).ok_or("AI clean-up is not set up yet.")?;
+    // Make sure the model still exists (providers retire models).
+    if let Some(model) = heal_ai_model(&state, &cfg) {
+        cfg.model = model;
+    }
     let sample = "um so lets meet at 2 PM actually make that 3 PM on monday";
     let prepared = app_core::pipeline::prepare(
         sample,
@@ -268,12 +401,18 @@ async fn test_ai(state: State<'_, AppState>) -> Result<AiTest, String> {
             match app_core::llm::parse_reply(&answer.content)
                 .map_err(|e| e.to_string())
                 .and_then(|r| {
+                    let rules = app_core::pipeline::finish(
+                        &prepared,
+                        &app_core::pipeline::Settings::default(),
+                    )
+                    .text;
                     app_core::llm::accept(
                         &r,
                         &prepared,
                         sample,
                         &[],
                         app_core::pipeline::Level::Light,
+                        &rules,
                     )
                     .map_err(|e| e.to_string())
                 }) {
@@ -718,7 +857,9 @@ pub fn run() {
             last_dictation_id,
             fix_dictation,
             learn_terms,
-            mic_status
+            mic_status,
+            set_cloud_asr,
+            pill_action
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -729,6 +870,7 @@ pub fn run() {
             };
             std::fs::create_dir_all(data_dir.join("models"))?;
             std::fs::create_dir_all(data_dir.join("audio"))?;
+            disable_power_throttling();
             let conn = db::open(&data_dir.join("app.sqlite3"))?;
             seed_packs(&conn);
 

@@ -24,6 +24,9 @@ use crate::{db, models, providers, AppState};
 
 /// The AI clean-up must answer within this time, or the rules are used instead.
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
+/// Cloud speech recognition normally answers in under half a second; after this, use the
+/// model on this computer instead.
+const CLOUD_ASR_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Hands-free recording warns at 19 minutes and stops (and transcribes) at 20.
 const HANDS_FREE_WARN: Duration = Duration::from_secs(19 * 60);
@@ -88,6 +91,12 @@ pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
             };
             c.apply_settings();
             c.expire_old_audio();
+            // Load and warm up the local model now, so the first dictation is not the slow one.
+            if c.ensure_engine().is_ok() {
+                if let Some(loaded) = c.engine.as_ref() {
+                    loaded.engine.warm_up();
+                }
+            }
             c.run(rx);
         })
         .expect("controller thread");
@@ -268,7 +277,7 @@ impl Controller {
             PillState {
                 state: "listening",
                 hands_free,
-                engine: self.engine_label(),
+                engine: String::new(),
                 ..Default::default()
             },
             hwnd,
@@ -303,7 +312,7 @@ impl Controller {
             level: self.recorder.level(),
             seconds: elapsed.as_secs(),
             hands_free: session.hands_free,
-            engine: self.engine_label(),
+            engine: String::new(),
         };
         overlay::emit(&self.app, &state);
     }
@@ -400,11 +409,12 @@ impl Controller {
         hwnd: Option<isize>,
     ) -> (String, String) {
         let prepared = pipeline::prepare(raw, settings, dictionary, snippets);
-        let rules = || pipeline::finish(&prepared, settings).text;
+        let rules_text = pipeline::finish(&prepared, settings).text;
+        let rules = || rules_text.clone();
         if settings.level == Level::Literal {
             return (rules(), "rules".into());
         }
-        let Some(cfg) = crate::ai_config(&self.state()) else {
+        let Some(mut cfg) = crate::ai_config(&self.state()) else {
             return (rules(), "rules".into());
         };
         self.pill(
@@ -423,7 +433,14 @@ impl Controller {
             language,
             dictionary.terms(),
         );
-        let result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+        let mut result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+        // Providers retire models. If ours is gone, pick a current one and try once more.
+        if matches!(&result, Err(providers::CallError::Http(404, body)) if body.contains("model")) {
+            if let Some(model) = crate::heal_ai_model(&self.state(), &cfg) {
+                cfg.model = model;
+                result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+            }
+        }
         if let Ok(conn) = self.state().db.lock() {
             let bytes = request.system.len() + request.user.len();
             let outcome = match &result {
@@ -443,8 +460,15 @@ impl Controller {
             .map_err(|e| e.to_string())
             .and_then(|answer| llm::parse_reply(&answer.content).map_err(|e| e.to_string()))
             .and_then(|reply| {
-                llm::accept(&reply, &prepared, raw, dictionary.terms(), settings.level)
-                    .map_err(|e| e.to_string())
+                llm::accept(
+                    &reply,
+                    &prepared,
+                    raw,
+                    dictionary.terms(),
+                    settings.level,
+                    &rules_text,
+                )
+                .map_err(|e| e.to_string())
             });
         match verdict {
             Ok(text) => (text, cfg.provider.clone()),
@@ -465,29 +489,77 @@ impl Controller {
             PillState {
                 state: "transcribing",
                 message: "Transcribing...".into(),
-                engine: self.engine_label(),
+                engine: String::new(),
                 ..Default::default()
             },
             hwnd,
             None,
         );
-        self.ensure_engine()?;
         // Quiet speech ("whisper mode"): gentle gain only, no noise reduction.
+        let quiet = asr_audio::rms(&samples) < 0.01;
         asr_audio::normalise_quiet(&mut samples, 0.05, 8.0);
 
         let language = self.state().setting("language");
         let (dictionary, snippets) = self.vocabulary();
         let hint = dictionary.recogniser_hint(400);
-        let options = Options {
-            language: (language != "auto").then(|| language.clone()),
-            // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
-            initial_prompt: (!hint.is_empty()).then_some(hint),
-            ..Default::default()
+        let lang = (language != "auto").then(|| language.clone());
+        let started = Instant::now();
+
+        // Cloud recognition (only after the user agreed to send audio), else on this computer.
+        let mut cloud_note = None;
+        let mut recognised: Option<(String, String)> = None;
+        let has_speech =
+            samples.len() >= app_asr::SAMPLE_RATE as usize / 4 && asr_audio::has_signal(&samples);
+        if let Some(cfg) = crate::asr_config(&self.state()).filter(|_| has_speech) {
+            let wav = providers::wav_bytes(&samples);
+            let bytes = wav.len();
+            let result =
+                providers::transcribe(&cfg, wav, lang.as_deref(), Some(&hint), CLOUD_ASR_TIMEOUT);
+            if let Ok(conn) = self.state().db.lock() {
+                let outcome = result
+                    .as_ref()
+                    .map(|_| "ok".to_string())
+                    .unwrap_or_else(|e| e.to_string());
+                db::log_event(
+                    &conn,
+                    "upload",
+                    &format!(
+                        "{} ({}): dictation audio for speech recognition, {bytes} bytes, {outcome}",
+                        cfg.provider, cfg.model
+                    ),
+                );
+            }
+            match result {
+                Ok((text, _)) => {
+                    recognised = Some((
+                        app_asr::guard::filter_text(&text, quiet),
+                        format!("Groq - {}", cfg.model),
+                    ));
+                }
+                Err(e) => {
+                    cloud_note = Some(format!(
+                        "cloud recognition failed ({e}), used this computer"
+                    ))
+                }
+            }
+        }
+        let (raw, engine_label) = match recognised {
+            Some(r) => r,
+            None => {
+                self.ensure_engine()?;
+                let options = Options {
+                    language: lang.clone(),
+                    // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
+                    initial_prompt: (!hint.is_empty()).then_some(hint.clone()),
+                    ..Default::default()
+                };
+                let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+                let transcript = loaded.engine.transcribe(&samples, &options)?;
+                (transcript.text.trim().to_string(), loaded.label.clone())
+            }
         };
-        let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
-        let transcript = loaded.engine.transcribe(&samples, &options)?;
-        let engine_label = loaded.label.clone();
-        let raw = transcript.text.trim().to_string();
+        let transcribe_ms = started.elapsed().as_millis() as u64;
+        let raw = raw.trim().to_string();
 
         let id = uuid::Uuid::new_v4().to_string();
         let process_name = target
@@ -501,7 +573,7 @@ impl Controller {
                 final_text: String::new(),
                 outcome: None,
                 audio_ms,
-                transcribe_ms: transcript.elapsed_ms,
+                transcribe_ms,
                 engine: engine_label,
                 target_process: process_name,
             });
@@ -529,6 +601,7 @@ impl Controller {
             .as_ref()
             .map(|t| app_rules::rule_for(&t.process, &t.title).category)
             .unwrap_or(app_rules::Category::Other);
+        let clean_started = Instant::now();
         let (final_text, cleanup) = self.clean(
             &raw,
             &settings,
@@ -538,6 +611,12 @@ impl Controller {
             &language,
             hwnd,
         );
+        let clean_ms = clean_started.elapsed().as_millis();
+        let insert_started = Instant::now();
+        let engine_label = match cloud_note {
+            Some(note) => format!("{engine_label} ({note})"),
+            None => engine_label,
+        };
 
         let outcome = if do_insert {
             Some(match &target {
@@ -552,6 +631,17 @@ impl Controller {
         } else {
             None
         };
+        // Local timing log, so speed can be measured on real use (no text is stored here).
+        if let Ok(conn) = self.state().db.lock() {
+            db::log_event(
+                &conn,
+                "timing",
+                &format!(
+                    "audio {audio_ms} ms | recognition {transcribe_ms} ms ({engine_label}) | clean-up {clean_ms} ms ({cleanup}) | insert {} ms",
+                    insert_started.elapsed().as_millis()
+                ),
+            );
+        }
 
         // Keep the audio for replay / re-transcription (retention applies).
         let audio_path = if self.state().setting("save_audio") == "true" {
@@ -603,7 +693,7 @@ impl Controller {
             final_text,
             outcome,
             audio_ms,
-            transcribe_ms: transcript.elapsed_ms,
+            transcribe_ms,
             engine: engine_label,
             target_process: process_name,
         })

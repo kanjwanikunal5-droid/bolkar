@@ -88,19 +88,31 @@ impl Dictionary {
     /// Vocabulary hint for the speech recogniser. Whisper reads only about the last 224
     /// tokens of its prompt, so the list is capped at `max_chars` (terms are given in
     /// priority order: the first ones are kept).
+    ///
+    /// The hint is written as a punctuated sentence ("Glossary: A, B, C."). Whisper copies the
+    /// style of its prompt: a bare word list made it drop full stops (measured 13 Nov 2026).
     pub fn recogniser_hint(&self, max_chars: usize) -> String {
-        let mut out = String::new();
+        const LEAD: &str = "Glossary: ";
+        let mut list = String::new();
         for t in &self.terms {
-            let extra = if out.is_empty() { t.len() } else { t.len() + 2 };
-            if out.len() + extra > max_chars {
+            let extra = if list.is_empty() {
+                t.len()
+            } else {
+                t.len() + 2
+            };
+            if LEAD.len() + list.len() + extra + 1 > max_chars {
                 break;
             }
-            if !out.is_empty() {
-                out.push_str(", ");
+            if !list.is_empty() {
+                list.push_str(", ");
             }
-            out.push_str(t);
+            list.push_str(t);
         }
-        out
+        if list.is_empty() {
+            String::new()
+        } else {
+            format!("{LEAD}{list}.")
+        }
     }
 
     pub fn apply(&self, text: &str, changes: &mut Vec<Change>) -> String {
@@ -199,9 +211,12 @@ mod tests {
             Term::new("Supabase"),
             Term::new("XLOOKUP"),
         ]);
-        assert_eq!(d.recogniser_hint(100), "EBITDA, Supabase, XLOOKUP");
-        assert_eq!(d.recogniser_hint(16), "EBITDA, Supabase");
-        assert_eq!(d.recogniser_hint(3), "");
+        assert_eq!(
+            d.recogniser_hint(100),
+            "Glossary: EBITDA, Supabase, XLOOKUP."
+        );
+        assert_eq!(d.recogniser_hint(27), "Glossary: EBITDA, Supabase.");
+        assert_eq!(d.recogniser_hint(12), "");
     }
 
     fn dict() -> Dictionary {
