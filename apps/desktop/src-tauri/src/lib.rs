@@ -27,6 +27,24 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub ctl: Mutex<Sender<Msg>>,
     pub hook_error: Mutex<Option<String>>,
+    pub recorder: audio::Recorder,
+}
+
+#[derive(Serialize)]
+struct MicStatus {
+    /// Microphone stream open right now.
+    open: bool,
+    /// Latest input level, 0..1.
+    level: f32,
+}
+
+/// For the live microphone meter in Settings.
+#[tauri::command]
+fn mic_status(state: State<AppState>) -> MicStatus {
+    MicStatus {
+        open: state.recorder.is_open(),
+        level: state.recorder.level(),
+    }
 }
 
 impl AppState {
@@ -55,7 +73,9 @@ const SETTINGS: &[(&str, &str)] = &[
     ("language", "auto"),
     ("level", "LIGHT"),
     ("use_gpu", "true"),
-    ("keep_mic_open", "false"),
+    // On by default: on this laptop the microphone takes 0.6-1.8 s to start, so opening it
+    // only at key-down cuts off the first words. Only the last 0.3 s is kept, in memory.
+    ("keep_mic_open", "true"),
     ("spoken_commands", "true"),
     ("save_audio", "true"),
     ("audio_retention_days", "7"),
@@ -697,7 +717,8 @@ pub fn run() {
             delete_snippet,
             last_dictation_id,
             fix_dictation,
-            learn_terms
+            learn_terms,
+            mic_status
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -726,14 +747,16 @@ pub fn run() {
                 });
             }
 
+            let recorder = audio::Recorder::spawn();
             app.manage(AppState {
                 db: Mutex::new(conn),
                 data_dir,
                 ctl: Mutex::new(ctl_tx),
                 hook_error: Mutex::new(hook_error),
+                recorder: recorder.clone(),
             });
             overlay::prepare(&handle);
-            controller::spawn(handle.clone(), ctl_rx);
+            controller::spawn(handle.clone(), ctl_rx, recorder);
 
             // Tray icon: the app keeps running in the background when its window is closed.
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;

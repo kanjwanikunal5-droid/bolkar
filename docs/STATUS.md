@@ -1,6 +1,7 @@
 # Status
 
-Last updated: **13 November 2026**. Stages 0, 1 and 2 are built. Several of their acceptance
+Last updated: **13 November 2026**. Stages 0, 1 and 2 are built, and GitHub CI passed on all
+of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
 Machine for every measurement: HP Victus 15, Ryzen 7 7445HS, 15.2 GB RAM, RTX 4050 Laptop GPU
@@ -67,7 +68,10 @@ laptop is too slow for anything but the base model. The GPU build is therefore t
 | Paste key sent, clipboard restored afterwards | **Passed** | App self-test: outcome "Pasted", clipboard marker text restored |
 | Dictation kept out of Win+V history | **Passed (marker check)** | Unit test confirms the exclusion format is on the clipboard. Opening Win+V by hand: **not run** |
 | Refuses to paste when focus moved | **Passed** | Self-test run where focus changed: outcome "Copied - focus changed" |
-| Text actually appears in a target app | **Not run** | The unattended test window could not stay in front: Windows' focus rules, plus the Claude app taking focus every few seconds. Needs the owner |
+| Text actually appears in a target app | **Passed (Notepad)** | 13 Nov: `scripts/selftest-notepad.ps1` with the real app: test clip -> text pasted into Notepad, read back through UI Automation, identical to the cleaned text; clipboard restored. A Chrome compose-box run was inconclusive (the page's text box did not have keyboard focus) and was stopped because the owner was using Chrome |
+| App window shows its screens | **Fixed and passed** | Bug found 13 Nov: the built app loaded `localhost:1420` (a development address) and showed nothing. Fixed by embedding the screens; every page then checked in the installed app |
+| Installer | **Passed** | `Bolkar_0.1.0_x64-setup.exe` (9.2 MB): installs for the current user without admin, adds a Start-menu entry and an uninstall entry; the installed app starts and shows every page |
+| First word not cut off | **Fixed** | Measured 13 Nov: the microphone takes 579-1846 ms to start. "Keep the microphone ready" (300 ms pre-roll held in memory) is now on by default; the installed app reports the microphone open with live levels |
 | Scenario 1: Gmail in Chrome | **Not run** | Needs the owner's voice and keyboard |
 | Notepad, Word, VS Code, Windows Terminal | **Not run** | Needs the owner |
 | Elevated Notepad shows "copied" fallback | **Not run** | Code path exists (`target::is_elevated`); not exercised by hand |

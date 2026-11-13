@@ -341,6 +341,38 @@ export function AiSettings() {
   );
 }
 
+/** Live microphone meter. Shows whether the microphone is ready and how loud it hears you. */
+export function MicMeter() {
+  const [mic, setMic] = useState<{ open: boolean; level: number } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      void api.micStatus().then(
+        (m) => alive && setMic(m),
+        () => {},
+      );
+    tick();
+    const t = setInterval(tick, 150);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  // Speech is quiet in RMS terms (about 0.01 to 0.2), so show it on a square-root scale.
+  const pct = mic ? Math.min(100, Math.round(Math.sqrt(mic.level) * 220)) : 0;
+  return (
+    <div className="field">
+      <span>Microphone</span>
+      <span className="row">
+        <meter min={0} max={100} value={pct} aria-label="Microphone level" style={{ width: "12rem", height: "1.2rem" }} />
+        <span className="dim">
+          {!mic ? "" : mic.open ? (pct > 3 ? "hearing you" : "ready - say something to test") : "opens when you press the keys"}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export function UploadsCard() {
   const [events, refresh] = useLoad(api.uploads, [] as UploadEvent[]);
   return (

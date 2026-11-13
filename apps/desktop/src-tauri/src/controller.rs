@@ -75,11 +75,10 @@ struct Controller {
     pill_generation: Arc<AtomicU64>,
 }
 
-pub fn spawn(app: AppHandle, rx: Receiver<Msg>) {
+pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
     std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
-            let recorder = Recorder::spawn();
             let mut c = Controller {
                 app,
                 recorder,

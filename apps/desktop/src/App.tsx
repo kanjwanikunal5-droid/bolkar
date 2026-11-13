@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
 import { APP_NAME } from "./brand";
-import { AiSettings, DictionaryPage, FixBox, SnippetsPage, UploadsCard } from "./Pages";
+import { AiSettings, DictionaryPage, FixBox, MicMeter, SnippetsPage, UploadsCard } from "./Pages";
 
 type Page = "home" | "history" | "dictionary" | "snippets" | "settings";
 
@@ -335,6 +335,7 @@ export function App() {
             </div>
             <div className="card">
               <h3>Dictation</h3>
+              <MicMeter />
               <div className="field">
                 <label htmlFor="language">Language</label>
                 <select id="language" value={settings.language ?? "auto"} onChange={(e) => set("language", e.target.value)}>
@@ -367,7 +368,9 @@ export function App() {
                   checked={settings.keep_mic_open === "true"}
                   onChange={(e) => set("keep_mic_open", String(e.target.checked))}
                 />
-                Keep the microphone ready so the first word is never clipped (Windows will show the microphone as in use)
+                Keep the microphone ready, so your first word is not cut off. Only the last 0.3 seconds are held in memory
+                (never saved or sent). Windows shows the microphone as in use while this is on. If you turn it off, the
+                microphone takes up to about 1-2 seconds to start after you press the keys.
               </label>
             </div>
             <AiSettings />

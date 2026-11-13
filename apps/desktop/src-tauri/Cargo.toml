@@ -19,6 +19,8 @@ gpu = ["app-asr/vulkan"]
 # to load the development server at localhost:1420 and stay blank. Run `pnpm build` in
 # apps/desktop before `cargo build`.
 custom-protocol = ["tauri/custom-protocol"]
+# Developer tools (ai-eval). Off by default so they are not shipped in the installer.
+dev-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -56,3 +58,4 @@ windows = { version = "0.61", features = [
 name = "ai-eval"
 path = "src/bin/ai-eval.rs"
 test = false
+required-features = ["dev-tools"]

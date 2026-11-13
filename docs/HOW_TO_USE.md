@@ -5,20 +5,19 @@ clean-up. Meeting notes, Android and the web app are not built yet (see [STATUS.
 
 ## Start the app
 
-There is no installer yet (Stage 8). For now the app is started from the project folder:
+Double-click the installer (`Bolkar_0.1.0_x64-setup.exe`). It installs for your Windows user
+only, needs no administrator rights, and adds **Bolkar** to the Start menu. Windows may show
+"Windows protected your PC" because the installer is not code-signed yet: click **More info ->
+Run anyway**.
 
-```
-pnpm desktop:dev
-```
-
-or, after `pnpm desktop:build`, by running the built program. A small icon appears near the
-clock; closing the window keeps the app running there. Right-click the icon and choose **Quit**
-to stop it.
+Start it from the Start menu. A small icon appears near the clock; closing the window keeps the
+app running there. Right-click the icon and choose **Quit** to stop it.
 
 ## First time: get a speech model
 
-Open **Settings -> Speech model** and press **Download** on one model. Models are large files
-and stay on your computer.
+On this laptop the best model (Large v3 Turbo) is already in place. On another computer, open
+**Settings -> Speech model** and press **Download** on one model. Models are large files and
+stay on your computer.
 
 | Model | Size | Use it when |
 |---|---|---|
@@ -79,8 +78,10 @@ Choose **Literal** in Settings to keep every word exactly.
 - **Wrong words.** Open **Dictation history**: every dictation is kept with the original
   recogniser output next to the cleaned text. Copy it from there.
 - **"No microphone found" / "Microphone in use".** Check the microphone in Windows sound settings.
-- **First word cut off** (common with Bluetooth headsets): switch on
-  "Keep the microphone ready" in Settings.
+- **First word cut off:** make sure "Keep the microphone ready" is on in Settings (it is on by
+  default). With it off, the microphone needs about 1-2 seconds to start.
+- **Microphone icon always showing in the taskbar:** that is "Keep the microphone ready". The
+  app holds only the last 0.3 seconds in memory and saves nothing until you press the keys.
 
 ## Privacy
 

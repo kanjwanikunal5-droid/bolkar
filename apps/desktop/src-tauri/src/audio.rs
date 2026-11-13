@@ -37,6 +37,7 @@ pub struct Recorder {
     tx: Sender<Cmd>,
     level: Arc<AtomicU32>,
     failed: Arc<AtomicBool>,
+    is_open: Arc<AtomicBool>,
 }
 
 struct Open {
@@ -149,6 +150,8 @@ impl Recorder {
         let level = Arc::new(AtomicU32::new(0));
         let failed = Arc::new(AtomicBool::new(false));
         let (level_t, failed_t) = (Arc::clone(&level), Arc::clone(&failed));
+        let is_open = Arc::new(AtomicBool::new(false));
+        let open_t = Arc::clone(&is_open);
 
         std::thread::Builder::new()
             .name("audio".into())
@@ -210,11 +213,17 @@ impl Recorder {
                             level_t.store(0, Ordering::Relaxed);
                         }
                     }
+                    open_t.store(open.is_some(), Ordering::SeqCst);
                 }
             })
             .expect("audio thread");
 
-        Self { tx, level, failed }
+        Self {
+            tx,
+            level,
+            failed,
+            is_open,
+        }
     }
 
     pub fn start(&self) -> Result<(), String> {
@@ -243,8 +252,46 @@ impl Recorder {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
+    /// Measures how long the default microphone takes to start delivering audio.
+    /// Run by hand: `cargo test -p app-desktop --lib mic_open_latency -- --ignored --nocapture`
+    #[cfg(test)]
+    pub fn measure_open_ms() -> Result<u128, String> {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let level = Arc::new(AtomicU32::new(u32::MAX));
+        let failed = Arc::new(AtomicBool::new(false));
+        let started = std::time::Instant::now();
+        let _open = open_stream(&shared, &level, &failed)?;
+        // `level` is written by the first audio callback.
+        while level.load(Ordering::Relaxed) == u32::MAX {
+            if started.elapsed().as_secs() > 3 {
+                return Err("no audio within 3 s".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(started.elapsed().as_millis())
+    }
+
+    /// True while the microphone stream is open (always, when "keep ready" is on).
+    pub fn is_open(&self) -> bool {
+        self.is_open.load(Ordering::SeqCst)
+    }
+
     /// True when the microphone disappeared or errored during capture.
     pub fn device_failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "opens the real microphone; run by hand"]
+    fn mic_open_latency() {
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            times.push(super::Recorder::measure_open_ms().expect("microphone"));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        println!("microphone open-to-first-audio ms: {times:?}");
     }
 }

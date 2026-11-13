@@ -10,6 +10,7 @@ const READ_ONLY = new Set([
   "list_terms",
   "list_snippets",
   "last_dictation_id",
+  "mic_status",
 ]);
 
 /**
@@ -161,6 +162,7 @@ export const api = {
   lastDictationId: () => invoke<string | null>("last_dictation_id"),
   fixDictation: (id: string, text: string) => invoke<Suggestion[]>("fix_dictation", { id, text }),
   learnTerms: (items: [string, string][]) => invoke<void>("learn_terms", { items }),
+  micStatus: () => invoke<{ open: boolean; level: number }>("mic_status"),
 };
 
 /** Tauri rejects with a plain string; show it as-is. */
