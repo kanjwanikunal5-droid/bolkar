@@ -9,17 +9,19 @@ Free voice dictation and AI meeting notes that run on your own device.
 Local by default: nothing leaves the device unless you switch on a cloud provider with your own
 free API key. No telemetry. No certifications are claimed.
 
-> **Status: early development.** Stage 0 (foundations) is done. There is no installable app yet.
-> See [docs/STATUS.md](docs/STATUS.md) for exactly what works and what has been measured.
+> **Status: early development.** Stages 0-2 are built: the Windows dictation app with local
+> speech recognition, clean-up, dictionary, snippets and optional AI clean-up. There is no
+> installer yet. See [docs/STATUS.md](docs/STATUS.md) for exactly what was tested and what was not.
 
 ## What exists today
 
 | Part | State |
 |---|---|
-| `crates/core` — text cleanup pipeline (fillers, self-corrections, lists, spoken commands, dictionary, snippets) | Working, tested |
+| `crates/core` — clean-up pipeline, dictionary, snippets, AI-answer checks, learning from fixes | Working, tested |
+| `crates/asr` — local Whisper (graphics card or processor), silence-hallucination guard | Working, tested |
+| `apps/desktop` — Windows app: hold Ctrl+Win to dictate into any app | Built; manual acceptance tests pending |
 | `bench` — accuracy scorer (WER/CER), hardware probe, pipeline runner | Working, tested |
-| `spec` — prompts, JSON schemas, golden test cases | Written |
-| Desktop app, Android keyboard, web app | Not started |
+| Meeting notes, Android keyboard, web app | Not started |
 
 ## Try it (developers)
 

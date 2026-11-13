@@ -33,7 +33,279 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE notes(id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, title TEXT, body TEXT);
     CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, kind TEXT, detail TEXT);
     "#,
+    // v2: hint-only dictionary terms (never forced into the text).
+    r#"
+    ALTER TABLE dictionary_terms ADD COLUMN auto_replace INT NOT NULL DEFAULT 1;
+    CREATE UNIQUE INDEX dictionary_terms_term ON dictionary_terms(term);
+    "#,
 ];
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TermRow {
+    pub id: String,
+    pub term: String,
+    pub spoken_variants: Vec<String>,
+    pub source: String,
+    pub auto_replace: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SnippetRow {
+    pub id: String,
+    pub trigger: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct EventRow {
+    pub at: String,
+    pub kind: String,
+    pub detail: String,
+}
+
+fn now() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// Adds a term, or updates it if the same spelling exists. Manual and learned entries win
+/// over pack entries.
+pub fn upsert_term(
+    conn: &Connection,
+    term: &str,
+    variants: &[String],
+    source: &str,
+    auto_replace: bool,
+) -> Result<(), String> {
+    let term = term.trim();
+    if term.is_empty() {
+        return Err("A dictionary word cannot be empty".into());
+    }
+    let variants: Vec<String> = variants
+        .iter()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case(term))
+        .collect();
+    let existing: Option<(String, String)> = conn
+        .query_row(
+            "SELECT spoken_variants, source FROM dictionary_terms WHERE term = ?1",
+            [term],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match existing {
+        Some((old, old_source)) => {
+            let mut merged: Vec<String> = serde_json::from_str(&old).unwrap_or_default();
+            for v in variants {
+                if !merged.contains(&v) {
+                    merged.push(v);
+                }
+            }
+            let source = if old_source == "pack" {
+                source
+            } else {
+                &old_source
+            };
+            conn.execute(
+                "UPDATE dictionary_terms SET spoken_variants = ?2, source = ?3, auto_replace = ?4 WHERE term = ?1",
+                params![term, serde_json::to_string(&merged).unwrap_or_default(), source, auto_replace],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO dictionary_terms(id, term, spoken_variants, language, source, created_at, uses, auto_replace)
+                 VALUES(?1, ?2, ?3, '', ?4, ?5, 0, ?6)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    term,
+                    serde_json::to_string(&variants).unwrap_or_default(),
+                    source,
+                    now(),
+                    auto_replace
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Manual first, then learned, then packs: that is the priority for the recogniser hint.
+pub fn list_terms(conn: &Connection) -> Result<Vec<TermRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, term, spoken_variants, source, auto_replace FROM dictionary_terms
+             ORDER BY CASE source WHEN 'manual' THEN 0 WHEN 'learned' THEN 1 ELSE 2 END, created_at DESC, term",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TermRow {
+                id: r.get(0)?,
+                term: r.get(1)?,
+                spoken_variants: serde_json::from_str(
+                    &r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                )
+                .unwrap_or_default(),
+                source: r.get(3)?,
+                auto_replace: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn delete_term(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM dictionary_terms WHERE id = ?1", [id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+pub fn upsert_snippet(conn: &Connection, trigger: &str, body: &str) -> Result<(), String> {
+    let trigger = trigger.trim().to_lowercase();
+    if trigger.split_whitespace().count() < 2 {
+        return Err("Use at least two words for a trigger, so it is never said by accident".into());
+    }
+    if body.trim().is_empty() {
+        return Err("The snippet text cannot be empty".into());
+    }
+    conn.execute(
+        "INSERT INTO snippets(id, trigger, body, created_at, uses) VALUES(?1, ?2, ?3, ?4, 0)
+         ON CONFLICT(trigger) DO UPDATE SET body = excluded.body",
+        params![uuid::Uuid::new_v4().to_string(), trigger, body, now()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn list_snippets(conn: &Connection) -> Result<Vec<SnippetRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, trigger, body FROM snippets ORDER BY trigger")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(SnippetRow {
+                id: r.get(0)?,
+                trigger: r.get(1)?,
+                body: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn delete_snippet(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM snippets WHERE id = ?1", [id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Records the user's consent to send text to a provider.
+pub fn record_consent(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    note: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO providers(id, kind, name, endpoint, model, enabled, consent_at, data_policy_note)
+         VALUES(?1, 'llm', ?1, ?2, ?3, 1, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET endpoint = excluded.endpoint, model = excluded.model, enabled = 1,
+             consent_at = excluded.consent_at, data_policy_note = excluded.data_policy_note",
+        params![provider, endpoint, model, now(), note],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn has_consent(conn: &Connection, provider: &str) -> bool {
+    conn.query_row(
+        "SELECT consent_at FROM providers WHERE id = ?1 AND enabled = 1",
+        [provider],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+pub fn revoke_consent(conn: &Connection, provider: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE providers SET enabled = 0, consent_at = NULL WHERE id = ?1",
+        [provider],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Local-only log. Every upload is written here ("Data that left this device").
+pub fn log_event(conn: &Connection, kind: &str, detail: &str) {
+    let _ = conn.execute(
+        "INSERT INTO events(at, kind, detail) VALUES(?1, ?2, ?3)",
+        params![now(), kind, detail],
+    );
+}
+
+pub fn list_events(conn: &Connection, kind: &str, limit: u32) -> Result<Vec<EventRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT at, kind, detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT ?2")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![kind, limit], |r| {
+            Ok(EventRow {
+                at: r.get(0)?,
+                kind: r.get(1)?,
+                detail: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn get_dictation(conn: &Connection, id: &str) -> Result<Dictation, String> {
+    conn.query_row(
+        &format!("SELECT {DICTATION_COLUMNS} FROM dictations WHERE id = ?1"),
+        [id],
+        row_to_dictation,
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn last_dictation_id(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT id FROM dictations WHERE final_text <> '' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        [],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Saves a hand-corrected text. The recogniser's original stays untouched in `raw_text`.
+pub fn update_final_text(conn: &Connection, id: &str, text: &str) -> Result<(), String> {
+    let n = conn
+        .execute(
+            "UPDATE dictations SET final_text = ?2, word_count = ?3 WHERE id = ?1",
+            params![id, text, text.split_whitespace().count() as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 1 {
+        Ok(())
+    } else {
+        Err("That dictation no longer exists".into())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Dictation {
@@ -53,6 +325,8 @@ pub struct Dictation {
     pub audio_path: Option<String>,
     pub word_count: i64,
     pub error: Option<String>,
+    /// Who cleaned the text: "rules", or the AI provider id, or "rules (AI skipped: ...)".
+    pub cleanup: String,
 }
 
 pub fn open(path: &Path) -> Result<Connection, String> {
@@ -105,11 +379,13 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
 pub fn insert_dictation(conn: &Connection, d: &Dictation) -> Result<(), String> {
     conn.execute(
         "INSERT INTO dictations(id, created_at, app_process, app_title, app_category, language, engine, level,
-            raw_text, clean_text, final_text, inserted, insert_method, duration_ms, audio_path, word_count, error)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16)",
+            raw_text, clean_text, final_text, inserted, insert_method, duration_ms, audio_path, word_count, error,
+            llm_provider)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![
             d.id, d.created_at, d.app_process, d.app_title, d.app_category, d.language, d.engine, d.level, d.raw_text,
-            d.final_text, d.inserted, d.insert_method, d.duration_ms, d.audio_path, d.word_count, d.error
+            d.final_text, d.inserted, d.insert_method, d.duration_ms, d.audio_path, d.word_count, d.error,
+            d.cleanup
         ],
     )
     .map(|_| ())
@@ -134,12 +410,13 @@ fn row_to_dictation(r: &rusqlite::Row) -> rusqlite::Result<Dictation> {
         audio_path: r.get(13)?,
         word_count: r.get::<_, Option<i64>>(14)?.unwrap_or(0),
         error: r.get(15)?,
+        cleanup: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
     })
 }
 
 const DICTATION_COLUMNS: &str =
     "id, created_at, app_process, app_title, app_category, language, engine, level,
-    raw_text, final_text, inserted, insert_method, duration_ms, audio_path, word_count, error";
+    raw_text, final_text, inserted, insert_method, duration_ms, audio_path, word_count, error, llm_provider";
 
 pub fn list_dictations(conn: &Connection, limit: u32) -> Result<Vec<Dictation>, String> {
     let mut stmt = conn
@@ -227,6 +504,7 @@ mod tests {
             audio_path: Some(format!("{id}.wav")),
             word_count: text.split_whitespace().count() as i64,
             error: None,
+            cleanup: "rules".into(),
         }
     }
 
@@ -271,6 +549,67 @@ mod tests {
             Some("b.wav")
         );
         assert_eq!(last_text(&conn).as_deref(), Some("first one"));
+    }
+
+    #[test]
+    fn dictionary_snippets_consent_and_events() {
+        let conn = open_in_memory().unwrap();
+        upsert_term(&conn, "EBITDA", &[], "pack", true).unwrap();
+        upsert_term(&conn, "EBITDA", &["Ebit Da".into()], "learned", true).unwrap();
+        upsert_term(&conn, "Supabase", &["super base".into()], "manual", true).unwrap();
+        assert!(upsert_term(&conn, "  ", &[], "manual", true).is_err());
+        let terms = list_terms(&conn).unwrap();
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms[0].term, "Supabase", "manual entries come first");
+        let ebitda = terms.iter().find(|t| t.term == "EBITDA").unwrap();
+        assert_eq!(ebitda.spoken_variants, vec!["ebit da"]);
+        assert_eq!(
+            ebitda.source, "learned",
+            "a learned fix upgrades a pack entry"
+        );
+        delete_term(&conn, &ebitda.id).unwrap();
+        assert_eq!(list_terms(&conn).unwrap().len(), 1);
+
+        assert!(
+            upsert_snippet(&conn, "address", "x").is_err(),
+            "one-word triggers are refused"
+        );
+        upsert_snippet(&conn, "Insert My Address", "12 Station Road").unwrap();
+        upsert_snippet(&conn, "insert my address", "14 Station Road").unwrap();
+        let s = list_snippets(&conn).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(
+            (s[0].trigger.as_str(), s[0].body.as_str()),
+            ("insert my address", "14 Station Road")
+        );
+
+        assert!(!has_consent(&conn, "groq"));
+        record_consent(&conn, "groq", "https://x", "m", "note").unwrap();
+        assert!(has_consent(&conn, "groq"));
+        revoke_consent(&conn, "groq").unwrap();
+        assert!(!has_consent(&conn, "groq"));
+
+        log_event(&conn, "upload", "groq: 120 bytes");
+        log_event(&conn, "other", "x");
+        let ev = list_events(&conn, "upload", 10).unwrap();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].detail, "groq: 120 bytes");
+    }
+
+    #[test]
+    fn hand_fixes_keep_the_original() {
+        let conn = open_in_memory().unwrap();
+        insert_dictation(
+            &conn,
+            &sample("a", "2026-11-12T10:00:00Z", "the ebit da margin"),
+        )
+        .unwrap();
+        assert_eq!(last_dictation_id(&conn).as_deref(), Some("a"));
+        update_final_text(&conn, "a", "the EBITDA margin").unwrap();
+        let d = get_dictation(&conn, "a").unwrap();
+        assert_eq!(d.final_text, "the EBITDA margin");
+        assert_eq!(d.raw_text, "um the ebit da margin");
+        assert!(update_final_text(&conn, "missing", "x").is_err());
     }
 
     #[test]

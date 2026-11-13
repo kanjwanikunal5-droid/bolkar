@@ -84,22 +84,40 @@ pub struct Output {
     pub uncertain_spans: Vec<String>,
 }
 
-/// Runs the whole deterministic pipeline on one raw transcript.
-pub fn run(
+/// The text after the steps every path shares (normalise, snippets, dictionary, spoken
+/// commands). Expanded snippet bodies are still parked behind placeholders.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub text: String,
+    pub protected: crate::snippets::Protected,
+    pub changes: Vec<Change>,
+}
+
+pub fn prepare(
     raw: &str,
     settings: &Settings,
     dictionary: &Dictionary,
     snippets: &SnippetSet,
-) -> Output {
+) -> Prepared {
     let mut changes = Vec::new();
-    let mut uncertain = Vec::new();
-
     let text = normalise::normalise(raw);
     let (mut text, protected) = snippets.expand(&text, &mut changes);
     text = dictionary.apply(&text, &mut changes);
     if settings.spoken_commands {
         text = commands::apply(&text, &mut changes);
     }
+    Prepared {
+        text,
+        protected,
+        changes,
+    }
+}
+
+/// The rule-based clean-up of prepared text.
+pub fn finish(prepared: &Prepared, settings: &Settings) -> Output {
+    let mut changes = prepared.changes.clone();
+    let mut uncertain = Vec::new();
+    let mut text = prepared.text.clone();
     if settings.level != Level::Literal {
         text = backtrack::apply(&text, &mut changes, &mut uncertain);
         text = fillers::remove_fillers(&text, &mut changes);
@@ -107,11 +125,21 @@ pub fn run(
         text = lists::format_lists(&text, &mut changes);
     }
     text = tidy::tidy(&text);
-    text = protected.restore(&text);
+    text = prepared.protected.restore(&text);
 
     Output {
         text,
         changes,
         uncertain_spans: uncertain,
     }
+}
+
+/// Runs the whole deterministic pipeline on one raw transcript.
+pub fn run(
+    raw: &str,
+    settings: &Settings,
+    dictionary: &Dictionary,
+    snippets: &SnippetSet,
+) -> Output {
+    finish(&prepare(raw, settings, dictionary, snippets), settings)
 }

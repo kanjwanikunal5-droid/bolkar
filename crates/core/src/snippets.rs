@@ -38,6 +38,39 @@ fn placeholder(index: usize) -> String {
 }
 
 impl Protected {
+    pub fn bodies(&self) -> &[String] {
+        &self.bodies
+    }
+
+    /// Visible token used when text is sent to an AI model, which must copy it unchanged.
+    pub fn token(index: usize) -> String {
+        format!("[[S{}]]", index + 1)
+    }
+
+    /// Replaces the invisible placeholders with visible `[[S1]]` tokens.
+    pub fn to_tokens(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for i in (0..self.bodies.len()).rev() {
+            out = out.replace(&placeholder(i), &Self::token(i));
+        }
+        out
+    }
+
+    /// Puts the snippet bodies back in place of `[[S1]]` tokens. Fails unless every token
+    /// appears exactly once, so a model cannot drop or duplicate a snippet.
+    pub fn restore_tokens(&self, text: &str) -> Result<String, String> {
+        let mut out = text.to_string();
+        for (i, body) in self.bodies.iter().enumerate().rev() {
+            let token = Self::token(i);
+            let n = out.matches(&token).count();
+            if n != 1 {
+                return Err(format!("snippet token {token} appears {n} times"));
+            }
+            out = out.replace(&token, body);
+        }
+        Ok(out)
+    }
+
     pub fn restore(&self, text: &str) -> String {
         let mut out = text.to_string();
         // Highest index first so "1" never matches inside "10".

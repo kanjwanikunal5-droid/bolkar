@@ -1,101 +1,103 @@
 # Status
 
-Last updated: **12 November 2026**. Current stage: **0 — Foundations (not yet complete)**.
+Last updated: **13 November 2026**. Stages 0, 1 and 2 are built. Several of their acceptance
+tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
-There is no installable app yet. What exists is the shared text-cleanup core, the measuring
-tools, and the project scaffolding.
+Machine for every measurement: HP Victus 15, Ryzen 7 7445HS, 15.2 GB RAM, RTX 4050 Laptop GPU
+(Vulkan), Windows 11 build 26300, Rust 1.99.1.
 
-## Stage 0 checklist
-
-| Item | State | Evidence |
-|---|---|---|
-| Hardware probe -> model recommendation | **Done** | `probe` run on the owner's laptop, output below |
-| Benchmark harness (WER/CER, shared normalisation, Indic NFC) | **Done** | 10 scoring tests pass |
-| 20 golden cleanup fixtures | **Done (30)** | 30/30 pass, including the 5 must-pass examples |
-| `docs/RESEARCH_DELTA.md` | **Done**, 4 items still open | See that file |
-| CI workflow written | **Done** | `.github/workflows/ci.yml` |
-| Public GitHub repo, CI green | **Not done** | Waiting for GitHub login on this laptop |
-| Local speech speed (real-time factor per model) | **Not run** | No speech engine is integrated yet; moves to the start of Stage 1 |
-| Local LLM latency | **Not run** | Ollama is not installed |
-| Groq latency | **Not run** | Needs the owner's own Groq API key |
-| TypeScript lint/tests in CI | **Not applicable yet** | No TypeScript code until Stage 4 |
-| Android unit tests in CI | **Not applicable yet** | No Android code until Stage 5 |
-
-Stage 0 is **not** marked complete because CI has not run on GitHub and no speed numbers exist.
-
-## What was run on 12 November 2026 (owner's laptop, Rust 1.99.1)
+## Automated tests (run 13 Nov 2026)
 
 | Command | Result |
 |---|---|
-| `cargo test --workspace` | **57 passed, 0 failed** (50 core unit, 3 golden/property, 3 bench library, 1 probe) |
+| `cargo test` on app-core, app-bench, app-asr, app-desktop | **107 passed, 0 failed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Clean |
 | `cargo fmt --all -- --check` | Clean |
-| `cargo check -p app-core --target wasm32-unknown-unknown` | Builds |
-| `cargo check -p app-core --target aarch64-linux-android` | Builds |
-| `cargo check -p app-core --target armv7-linux-androideabi` | Builds |
+| `pnpm --filter desktop build` (TypeScript type-check + bundle) | Clean |
+| Core builds for wasm32 and both Android targets | Builds (Stage 0) |
 
-### Golden fixtures: 30 of 30 pass (100%)
+What the 107 cover:
+- clean-up rules and the golden fixtures;
+- AI-answer validation and learning from fixes;
+- WER/CER scoring and the speech hallucination guard;
+- audio helpers and the keyboard state machine;
+- the real Windows clipboard: private write, restore, and an image round trip;
+- Windows Credential Manager: save, read and delete;
+- the AI client against a fake local server: success, time-out, rate limit, bad key, bad answer;
+- the database: migrations, history, dictionary, snippets, consent, upload log;
+- model checksums and per-app paste rules.
 
-| Category | Cases |
-|---|---|
-| Self-correction (backtracking) | 7 |
-| Self-correction, must NOT change | 3 |
-| Fillers | 4 |
-| Fillers, must NOT change | 1 |
-| Stutters | 1 |
-| Lists | 2 (+1 must NOT change) |
-| Spoken commands | 2 (+1 must NOT change) |
-| Dictionary, snippet | 1 each |
-| Hinglish | 2 (+1 must NOT change) |
-| LITERAL level, plain negatives | 3 |
+### Golden clean-up fixtures: 160 of 166 pass (96.4%)
 
-The five examples named in the build prompt all pass:
+`spec/fixtures/cleanup_core.json` (32) + `cleanup_extended.json` (134). The five must-pass
+examples from the build prompt all pass. About half of the cases are sentences that must
+**not** change. The 6 known failures, kept as failures on purpose:
 
-- "Let's meet at 2 PM... actually make that 3 PM" -> "Let's meet at 3 PM."
-- "Schedule the meeting for Monday at 3 PM. Actually, make that 4 PM." -> "...Monday at 4 PM."
-- "Revenue increased by 15 percent. Sorry, it increased by 12 percent." -> "Revenue increased by 12 percent."
-- "So, um, I think, you know, we should probably review the budget again." -> "So, I think we should probably review the budget again."
-- "I have two points to make" -> unchanged
+| Case | Input | Rules give | Why |
+|---|---|---|---|
+| x-neg-045 | "Hmm is a sound, not a word." | "Is a sound, not a word." | "Hmm" used as a noun is taken for a hesitation |
+| x-fl-014 | "That's fine, I mean, we can wait." | "That's fine we can wait." | Which comma to keep is ambiguous |
+| x-fl-017 | "We should, um, maybe, postpone it." | "We should maybe, postpone it." | Same |
+| x-hg-002 | "Report, matlab, ready hai." | "Report, ready hai." | Same |
+| x-cm-005 | "Line one new line line two" | unchanged | "one new line" reads as a noun phrase |
+| x-lit-002 | "first, a. second, b." | "First, a. second, b." | "a." looks like an abbreviation |
 
-### Hardware probe output
+The AI clean-up path is meant to handle these; that is measured with `ai-eval` (below).
 
-```
-OS:        Windows 11 Home Single Language
-Processor: AMD Ryzen 7 7445HS w/ Radeon 740M Graphics (6 cores / 12 threads)
-Memory:    15.2 GB
-Free disk: 241.1 GB (D:\bolkar)
-Graphics:  AMD Radeon 740M Graphics (integrated, Vulkan)
-Graphics:  NVIDIA GeForce RTX 4050 Laptop GPU (dedicated, Vulkan)
+## Measured speed: local speech recognition
 
-Suggested model: LargeV3Turbo on Vulkan
-```
+Test clip: 26.7 s of synthetic (text-to-speech) English, so the numbers show **speed only, not
+accuracy**. `rtf` tool, median of 3 runs.
 
-This is a first guess from the hardware. It has not been confirmed by a speed measurement.
+| Model | Graphics card (Vulkan) | Processor only |
+|---|---|---|
+| base (57 MB) | 1.6 s (RTF 0.06) | 29.1 s (RTF 1.09) |
+| small (181 MB) | 3.1 s (RTF 0.11) | 110.9 s (RTF 4.15) |
+| large-v3-turbo (547 MB) | 4.6 s (RTF 0.17) | stopped after 10 min |
+
+Inside the app, the first dictation after start-up took 8.5 s on large-v3-turbo with the
+graphics card, because the card's programs are prepared on first use. On processor only, this
+laptop is too slow for anything but the base model. The GPU build is therefore the default.
+
+## Stage 1 — Windows dictation
+
+| Acceptance check | State | Evidence |
+|---|---|---|
+| Recording -> local Whisper -> clean-up, inside the real app | **Passed** | App self-test on the test clip: correct raw text, "um" removed, 15% -> 12% correction applied, list formatted |
+| Paste key sent, clipboard restored afterwards | **Passed** | App self-test: outcome "Pasted", clipboard marker text restored |
+| Dictation kept out of Win+V history | **Passed (marker check)** | Unit test confirms the exclusion format is on the clipboard. Opening Win+V by hand: **not run** |
+| Refuses to paste when focus moved | **Passed** | Self-test run where focus changed: outcome "Copied - focus changed" |
+| Text actually appears in a target app | **Not run** | The unattended test window could not stay in front: Windows' focus rules, plus the Claude app taking focus every few seconds. Needs the owner |
+| Scenario 1: Gmail in Chrome | **Not run** | Needs the owner's voice and keyboard |
+| Notepad, Word, VS Code, Windows Terminal | **Not run** | Needs the owner |
+| Elevated Notepad shows "copied" fallback | **Not run** | Code path exists (`target::is_elevated`); not exercised by hand |
+| Start menu does not open after Ctrl+Win | **Not run** | Masking key implemented; needs a person pressing the keys |
+| Long pauses do not end push-to-talk | **Passed (logic)** | State-machine test: 60 s hold, release ends it. Real hold: not run |
+| 50 dictations without crash or duplicate | **Not run** | Needs the owner |
+
+## Stage 2 — clean-up, dictionary, snippets, AI providers
+
+| Acceptance check | State | Evidence |
+|---|---|---|
+| >= 95% of golden fixtures pass with rules | **Passed** | 96.4% (160/166) |
+| >= 150 fixtures including backtrack, lists, Hinglish | **Passed** | 166 |
+| AI answer never adds a number, name, e-mail or link | **Passed (automated check)** | `llm::accept` rejects these; 8 unit tests including invented time, name and e-mail |
+| AI provider offline or slow -> rules within 2.5 s | **Passed (fake server)** | Time-out test: a slow server is abandoned at the limit. Real provider: not run |
+| AI path passes >= 90% of fixtures | **Not run** | Needs the owner's Groq key saved in the app; then run `ai-eval` |
+| Finance + Tech packs on by default | **Passed** | Fresh install: 35 terms loaded; Excel, React, Claude, Cursor are hint-only |
+| Dictionary feeds the recogniser | **Passed** | App run with the packs as Whisper prompt: same correct transcript, nothing invented |
+| Keys only in Windows Credential Manager | **Passed** | Unit test round trip; the key is never written to the database |
+| Every upload logged locally | **Passed** | Code logs each request; fresh install shows 0 uploads |
+| Fix popup (Alt+Shift+F) and learning from fixes | **Built**; manual use **not run** | `learn::suggest` tests pass |
+| Styles per app | **Built** | App category from the window decides the style sent to the AI |
+
+Not built in Stage 2 (moved later): Command Mode (Stage 7), import/export of dictionary and
+snippets (Stage 5), per-app rules editable in the UI.
 
 ## Measured accuracy per language
 
-**None yet.** No speech engine is integrated and no recordings have been scored. No accuracy
-figure for this app exists, and none will be shown in the UI until one is measured.
-
-## Known limits of the deterministic cleanup
-
-These are by design: when a rule is unsure it leaves the text alone.
-
-- It does not add punctuation the recogniser did not produce (apart from the full stop that
-  ends a corrected sentence).
-- Self-corrections are applied only when a value is replaced by a value of the same kind
-  (time, percentage, money, date, day, number) or the sentence is clearly restated. Corrections
-  of names or phrases ("send it to Rahul, sorry, Priya") are kept as spoken.
-- Spelled-out times ("three thirty") are not recognised as times.
-- The word "period" is a command only when the recogniser already set it apart; "full stop"
-  always works.
-- Removing a hesitation between two commas can drop a comma a careful writer would keep
-  ("If it rains, um, we cancel" -> "If it rains we cancel").
-- Only one numbered list per dictation is formatted.
-- Stutter removal covers common English function words only, so Hindi reduplication
-  ("dheere dheere") is never damaged.
-- PROFESSIONAL level equals LIGHT until an LLM provider exists (Stage 2).
+**None yet.** No real recordings have been scored. No accuracy figure is shown anywhere in the app.
 
 ## Costs so far
 
-₹0 for tools and services. The only cost is the builder's own Claude usage.
+₹0. All tools are free; Groq is used on its free tier with the owner's own key.

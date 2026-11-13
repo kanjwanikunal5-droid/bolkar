@@ -9,6 +9,8 @@ pub mod brand {
 
 pub mod dictionary;
 pub mod hardware;
+pub mod learn;
+pub mod llm;
 pub mod metrics;
 pub mod pipeline;
 pub mod snippets;

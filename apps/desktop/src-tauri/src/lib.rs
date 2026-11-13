@@ -1,12 +1,14 @@
-//! Desktop app: system-wide dictation for Windows.
+﻿//! Desktop app: system-wide dictation for Windows.
 
 mod audio;
 mod controller;
+pub mod credentials;
 mod db;
 mod hotkey;
 mod insert;
 mod models;
 mod overlay;
+pub mod providers;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
@@ -60,11 +62,321 @@ const SETTINGS: &[(&str, &str)] = &[
     ("ui_scale", "125"),
 ];
 
+/// Keys set only through `set_ai` (never through the generic settings command).
+const AI_PROVIDER: &str = "ai_provider";
+const AI_MODEL: &str = "ai_model";
+const AI_BASE_URL: &str = "ai_base_url";
+
+/// The AI clean-up configuration, but only when it is fully usable: a provider chosen,
+/// consent recorded, and (where needed) a key in Credential Manager.
+pub fn ai_config(state: &AppState) -> Option<providers::Config> {
+    let conn = state.db.lock().ok()?;
+    let provider = db::get_setting(&conn, AI_PROVIDER).filter(|p| p != "none")?;
+    let preset = providers::preset(&provider)?;
+    if !db::has_consent(&conn, &provider) {
+        return None;
+    }
+    let base_url = db::get_setting(&conn, AI_BASE_URL)
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| preset.base_url.to_string());
+    let model = db::get_setting(&conn, AI_MODEL)
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| preset.model.to_string());
+    let key = credentials::load(&provider);
+    if (preset.needs_key && key.is_none()) || base_url.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some(providers::Config {
+        provider,
+        base_url,
+        model,
+        key,
+    })
+}
+
 fn default_setting(key: &str) -> &'static str {
     SETTINGS
         .iter()
         .find(|(k, _)| *k == key)
         .map_or("", |(_, v)| v)
+}
+
+#[derive(Serialize)]
+struct AiStatus {
+    presets: &'static [providers::Preset],
+    provider: String,
+    model: String,
+    base_url: String,
+    has_key: bool,
+    consent: bool,
+    /// True when dictations are actually being sent for AI clean-up.
+    active: bool,
+}
+
+#[tauri::command]
+fn get_ai(state: State<AppState>) -> AiStatus {
+    let (provider, model, base_url, consent) = {
+        let conn = state.db.lock().expect("db");
+        let provider = db::get_setting(&conn, AI_PROVIDER).unwrap_or_else(|| "none".into());
+        let consent = db::has_consent(&conn, &provider);
+        (
+            provider,
+            db::get_setting(&conn, AI_MODEL).unwrap_or_default(),
+            db::get_setting(&conn, AI_BASE_URL).unwrap_or_default(),
+            consent,
+        )
+    };
+    AiStatus {
+        presets: providers::PRESETS,
+        has_key: provider != "none" && credentials::load(&provider).is_some(),
+        active: ai_config(&state).is_some(),
+        provider,
+        model,
+        base_url,
+        consent,
+    }
+}
+
+/// Saves the AI clean-up choice. `key` is stored only in Windows Credential Manager; an
+/// empty or missing key keeps the existing one. Nothing is sent anywhere here.
+#[tauri::command]
+fn set_ai(
+    state: State<AppState>,
+    provider: String,
+    model: String,
+    base_url: String,
+    key: Option<String>,
+    consent: bool,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if provider == "none" {
+        if let Some(old) = db::get_setting(&conn, AI_PROVIDER) {
+            db::revoke_consent(&conn, &old)?;
+        }
+        return db::set_setting(&conn, AI_PROVIDER, "none");
+    }
+    let preset = providers::preset(&provider).ok_or("unknown provider")?;
+    if !consent {
+        return Err("Please tick the box to agree before turning on AI clean-up.".into());
+    }
+    let base_url = base_url.trim().to_string();
+    if !base_url.is_empty()
+        && !(base_url.starts_with("https://")
+            || base_url.starts_with("http://localhost")
+            || base_url.starts_with("http://127.0.0.1"))
+    {
+        return Err("The server address must start with https:// (or be on this computer).".into());
+    }
+    if let Some(k) = key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        credentials::save(&provider, k)?;
+    }
+    if preset.needs_key && credentials::load(&provider).is_none() {
+        return Err("Paste your API key first.".into());
+    }
+    db::set_setting(&conn, AI_PROVIDER, &provider)?;
+    db::set_setting(&conn, AI_MODEL, model.trim())?;
+    db::set_setting(&conn, AI_BASE_URL, &base_url)?;
+    let endpoint = if base_url.is_empty() {
+        preset.base_url
+    } else {
+        &base_url
+    };
+    db::record_consent(&conn, &provider, endpoint, model.trim(), preset.data_note)
+}
+
+#[tauri::command]
+fn forget_ai_key(state: State<AppState>, provider: String) -> Result<(), String> {
+    credentials::delete(&provider);
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::revoke_consent(&conn, &provider)?;
+    if db::get_setting(&conn, AI_PROVIDER).as_deref() == Some(provider.as_str()) {
+        db::set_setting(&conn, AI_PROVIDER, "none")?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct AiTest {
+    ok: bool,
+    ms: u64,
+    message: String,
+}
+
+/// Sends one fixed sample sentence (no personal data) to check the key and the speed.
+#[tauri::command]
+async fn test_ai(state: State<'_, AppState>) -> Result<AiTest, String> {
+    let cfg = ai_config(&state).ok_or("AI clean-up is not set up yet.")?;
+    let sample = "um so lets meet at 2 PM actually make that 3 PM on monday";
+    let prepared = app_core::pipeline::prepare(
+        sample,
+        &app_core::pipeline::Settings::default(),
+        &app_core::dictionary::Dictionary::default(),
+        &app_core::snippets::SnippetSet::default(),
+    );
+    let request = app_core::llm::build_cleanup(
+        &prepared,
+        app_core::pipeline::Level::Light,
+        app_core::llm::AppCategory::Email,
+        "en",
+        &[],
+    );
+    let log_cfg = cfg.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        providers::chat(
+            &cfg,
+            &request.system,
+            &request.user,
+            std::time::Duration::from_secs(15),
+        )
+        .map(|a| (a, request.system.len() + request.user.len()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Ok(conn) = state.db.lock() {
+        db::log_event(
+            &conn,
+            "upload",
+            &format!(
+                "{} ({}): connection test with a fixed sample sentence",
+                log_cfg.provider, log_cfg.model
+            ),
+        );
+    }
+    Ok(match result {
+        Ok((answer, _)) => {
+            let ms = answer.elapsed.as_millis() as u64;
+            match app_core::llm::parse_reply(&answer.content)
+                .map_err(|e| e.to_string())
+                .and_then(|r| {
+                    app_core::llm::accept(
+                        &r,
+                        &prepared,
+                        sample,
+                        &[],
+                        app_core::pipeline::Level::Light,
+                    )
+                    .map_err(|e| e.to_string())
+                }) {
+                Ok(text) => AiTest {
+                    ok: true,
+                    ms,
+                    message: format!(
+                        "Working. Sample result: \"{text}\" ({ms} ms){}",
+                        if ms > 2500 {
+                            ". Note: slower than the 2.5 s limit, so dictations will often use the built-in rules."
+                        } else {
+                            ""
+                        }
+                    ),
+                },
+                Err(why) => AiTest {
+                    ok: false,
+                    ms,
+                    message: format!(
+                        "Connected, but the answer was not usable: {why}. Try another model."
+                    ),
+                },
+            }
+        }
+        Err(e) => AiTest {
+            ok: false,
+            ms: 0,
+            message: format!("Not working: {e}."),
+        },
+    })
+}
+
+#[tauri::command]
+fn list_uploads(state: State<AppState>) -> Result<Vec<db::EventRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_events(&conn, "upload", 200)
+}
+
+#[tauri::command]
+fn list_terms(state: State<AppState>) -> Result<Vec<db::TermRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_terms(&conn)
+}
+
+#[tauri::command]
+fn add_term(
+    state: State<AppState>,
+    term: String,
+    variants: Vec<String>,
+    auto_replace: Option<bool>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::upsert_term(
+        &conn,
+        &term,
+        &variants,
+        "manual",
+        auto_replace.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+fn delete_term(state: State<AppState>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_term(&conn, &id)
+}
+
+#[tauri::command]
+fn list_snippets(state: State<AppState>) -> Result<Vec<db::SnippetRow>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_snippets(&conn)
+}
+
+#[tauri::command]
+fn add_snippet(state: State<AppState>, trigger: String, body: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::upsert_snippet(&conn, &trigger, &body)
+}
+
+#[tauri::command]
+fn delete_snippet(state: State<AppState>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_snippet(&conn, &id)
+}
+
+#[tauri::command]
+fn last_dictation_id(state: State<AppState>) -> Option<String> {
+    state.db.lock().ok().and_then(|c| db::last_dictation_id(&c))
+}
+
+/// Saves a corrected dictation and returns dictionary suggestions learned from the fix.
+#[tauri::command]
+fn fix_dictation(
+    state: State<AppState>,
+    id: String,
+    text: String,
+) -> Result<Vec<app_core::learn::Suggestion>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let before = db::get_dictation(&conn, &id)?;
+    db::update_final_text(&conn, &id, &text)?;
+    Ok(app_core::learn::suggest(&before.final_text, &text))
+}
+
+#[tauri::command]
+fn learn_terms(state: State<AppState>, items: Vec<(String, String)>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    for (heard, term) in items {
+        db::upsert_term(&conn, &term, &[heard], "learned", true)?;
+    }
+    Ok(())
+}
+
+/// First run: enable the Finance and Tech word packs (editable afterwards).
+fn seed_packs(conn: &Connection) {
+    if db::get_setting(conn, "packs_seeded").is_some() {
+        return;
+    }
+    for pack in ["finance", "tech"] {
+        for t in app_core::dictionary::pack(pack) {
+            let _ = db::upsert_term(conn, &t.term, &t.spoken_variants, "pack", t.auto_replace);
+        }
+    }
+    let _ = db::set_setting(conn, "packs_seeded", "finance,tech");
 }
 
 #[derive(Serialize)]
@@ -116,6 +428,10 @@ fn get_status(state: State<AppState>) -> Status {
             ("Esc", "Cancel while recording"),
             ("Alt + Shift + Z", "Paste last dictation"),
             ("Alt + Shift + X", "Copy last dictation"),
+            (
+                "Alt + Shift + F",
+                "Fix last dictation (teaches the dictionary)",
+            ),
         ],
     }
 }
@@ -367,7 +683,21 @@ pub fn run() {
             list_models,
             download_model,
             delete_model,
-            transcribe_file
+            transcribe_file,
+            get_ai,
+            set_ai,
+            forget_ai_key,
+            test_ai,
+            list_uploads,
+            list_terms,
+            add_term,
+            delete_term,
+            list_snippets,
+            add_snippet,
+            delete_snippet,
+            last_dictation_id,
+            fix_dictation,
+            learn_terms
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -379,6 +709,7 @@ pub fn run() {
             std::fs::create_dir_all(data_dir.join("models"))?;
             std::fs::create_dir_all(data_dir.join("audio"))?;
             let conn = db::open(&data_dir.join("app.sqlite3"))?;
+            seed_packs(&conn);
 
             let (ctl_tx, ctl_rx) = channel::<Msg>();
             // Keyboard hook -> controller.

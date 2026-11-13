@@ -11,6 +11,7 @@ pub const VK_ESCAPE: u32 = 0x1B;
 pub const VK_H: u32 = 0x48;
 pub const VK_X: u32 = 0x58;
 pub const VK_Z: u32 = 0x5A;
+pub const VK_F: u32 = 0x46;
 
 /// A press shorter than this is a "tap", not a dictation.
 pub const TAP_MS: u32 = 250;
@@ -28,6 +29,7 @@ pub enum Action {
     Cancel,
     PasteLast,
     CopyLast,
+    FixLast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -236,6 +238,8 @@ impl Machine {
                     swallow(self, Action::PasteLast)
                 } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_X {
                     swallow(self, Action::CopyLast)
+                } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_F {
+                    swallow(self, Action::FixLast)
                 } else {
                     Decision::default()
                 }
@@ -421,6 +425,8 @@ mod tests {
         assert_eq!((d.action, d.swallow), (Some(Action::PasteLast), true));
         assert!(m.on_key(VK_Z, false, 20).swallow);
         assert_eq!(m.on_key(VK_X, true, 30).action, Some(Action::CopyLast));
+        let d = m.on_key(VK_F, true, 40);
+        assert_eq!((d.action, d.swallow), (Some(Action::FixLast), true));
         // Plain Z is just a letter.
         let mut m = Machine::new();
         assert_eq!(m.on_key(VK_Z, true, 0), Decision::default());

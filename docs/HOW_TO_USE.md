@@ -1,7 +1,7 @@
 # How to use
 
-This covers what exists today: **Windows dictation**. Meeting notes, the dictionary, snippets,
-cloud providers, Android and the web app are not built yet (see [STATUS.md](STATUS.md)).
+This covers what exists today: **Windows dictation**, the dictionary, snippets and optional AI
+clean-up. Meeting notes, Android and the web app are not built yet (see [STATUS.md](STATUS.md)).
 
 ## Start the app
 
@@ -41,6 +41,27 @@ You can pause while holding the keys; nothing stops until you let go.
 | `Esc` while listening | Cancel, nothing is typed |
 | `Alt` + `Shift` + `Z` | Paste the last dictation again |
 | `Alt` + `Shift` + `X` | Copy the last dictation |
+| `Alt` + `Shift` + `F` | Fix the last dictation (the app learns new words from your fix) |
+
+## Teach it your words
+
+- **Dictionary:** add words the way you want them written (for example `EBITDA`, heard as
+  "ebit da"). Finance and Tech word packs are already switched on.
+- **Fix:** after a dictation, press `Alt` + `Shift` + `F` (or **Fix** in Dictation history),
+  correct the text and save. The app offers to add the changed words to your dictionary.
+- **Snippets:** a phrase of two or more words, such as "insert my address", is replaced by the
+  saved text.
+
+## Optional: better clean-up with your free Groq key
+
+1. Create a key at https://console.groq.com/keys (free account).
+2. In the app: **Settings -> AI clean-up -> Service: Groq**, paste the key, read the note,
+   tick the box to agree, **Save**, then **Test**.
+
+The key is kept in Windows Credential Manager. Only the text of a dictation is sent, never the
+audio. Every answer is checked; if it adds anything you did not say, or takes longer than
+2.5 seconds, the built-in rules are used instead. Everything sent is listed under
+**Settings -> Data that left this computer**. Choose **Off** to stop it at any time.
 
 ## What gets cleaned up (Light mode)
 
@@ -63,7 +84,8 @@ Choose **Literal** in Settings to keep every word exactly.
 
 ## Privacy
 
-Speech is recognised on your computer. Nothing is sent to the internet. Dictations are kept out
+Speech is recognised on your computer and audio never leaves it. Text is sent only if you
+switch on AI clean-up. Dictations are kept out
 of Windows clipboard history (Win + V). Recordings are kept for 7 days so a dictation can be
 replayed, then deleted; you can switch this off in Settings.
 

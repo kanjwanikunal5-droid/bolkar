@@ -2,8 +2,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
 import { APP_NAME } from "./brand";
+import { AiSettings, DictionaryPage, FixBox, SnippetsPage, UploadsCard } from "./Pages";
 
-type Page = "home" | "history" | "settings";
+type Page = "home" | "history" | "dictionary" | "snippets" | "settings";
 
 const LANGUAGES: [string, string][] = [
   ["auto", "Detect automatically"],
@@ -27,9 +28,26 @@ function when(iso: string) {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
-function DictationRow({ d, onChanged }: { d: Dictation; onChanged: () => void }) {
+function DictationRow({ d, onChanged, startFixing = false }: { d: Dictation; onChanged: () => void; startFixing?: boolean }) {
   const [showRaw, setShowRaw] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [fixing, setFixing] = useState(startFixing);
+  useEffect(() => setFixing(startFixing), [startFixing]);
+  if (fixing) {
+    return (
+      <div className="dictation">
+        <p className="dim">Correct the text, then save. Your original words stay in history.</p>
+        <FixBox
+          id={d.id}
+          text={d.final_text}
+          onDone={() => {
+            setFixing(false);
+            onChanged();
+          }}
+        />
+      </div>
+    );
+  }
   return (
     <div className="dictation">
       <div className="row spread">
@@ -39,6 +57,7 @@ function DictationRow({ d, onChanged }: { d: Dictation; onChanged: () => void })
         <span className="row">
           <span className={`tag ${d.inserted ? "ok" : ""}`}>{d.inserted ? "inserted" : d.insert_method || "not inserted"}</span>
           <span className="tag">{d.engine}</span>
+          {d.cleanup && <span className="tag" title={d.cleanup}>{d.cleanup.startsWith("rules") ? (d.cleanup === "rules" ? "rules" : "rules (AI skipped)") : `AI: ${d.cleanup}`}</span>}
         </span>
       </div>
       <p>{d.final_text}</p>
@@ -60,6 +79,9 @@ function DictationRow({ d, onChanged }: { d: Dictation; onChanged: () => void })
           }
         >
           {copied ? "Copied" : "Copy"}
+        </button>
+        <button className="btn" onClick={() => setFixing(true)}>
+          Fix
         </button>
         <button className="btn" onClick={() => setShowRaw((v) => !v)} aria-expanded={showRaw}>
           {showRaw ? "Hide original" : "Show original"}
@@ -160,11 +182,22 @@ export function App() {
     void api.dictations().then(setDictations);
   }, []);
 
+  const [fixId, setFixId] = useState<string | null>(null);
+
   useEffect(() => {
     refresh();
     const off = listen("dictation-added", refresh);
+    // Alt + Shift + F: open the last dictation for correcting.
+    const offFix = listen("fix-last", () => {
+      void api.lastDictationId().then((id) => {
+        refresh();
+        setPage("history");
+        setFixId(id);
+      });
+    });
     return () => {
       void off.then((f) => f());
+      void offFix.then((f) => f());
     };
   }, [refresh]);
 
@@ -186,6 +219,8 @@ export function App() {
   const pages: [Page, string][] = [
     ["home", "Home"],
     ["history", "Dictation history"],
+    ["dictionary", "Dictionary"],
+    ["snippets", "Snippets"],
     ["settings", "Settings"],
   ];
 
@@ -245,7 +280,7 @@ export function App() {
               </span>
               <span className="dim">
                 Speech recognition: on this device{status?.gpu_build && settings.use_gpu === "true" ? " (graphics card)" : ""} ·
-                nothing is sent to the internet
+                audio never leaves this computer
               </span>
             </div>
             <div className="card">
@@ -268,11 +303,22 @@ export function App() {
             <div className="card">
               {dictations.length === 0 && <p className="dim">Nothing dictated yet.</p>}
               {dictations.map((d) => (
-                <DictationRow key={d.id} d={d} onChanged={refresh} />
+                <DictationRow
+                  key={d.id}
+                  d={d}
+                  startFixing={d.id === fixId}
+                  onChanged={() => {
+                    setFixId(null);
+                    refresh();
+                  }}
+                />
               ))}
             </div>
           </>
         )}
+
+        {page === "dictionary" && <DictionaryPage />}
+        {page === "snippets" && <SnippetsPage />}
 
         {page === "settings" && (
           <>
@@ -304,6 +350,7 @@ export function App() {
                 <select id="level" value={settings.level ?? "LIGHT"} onChange={(e) => set("level", e.target.value)}>
                   <option value="LITERAL">Literal - keep every word</option>
                   <option value="LIGHT">Light - remove "um", fix self-corrections, format lists</option>
+                  <option value="PROFESSIONAL">Professional - Light plus grammar polish (needs AI clean-up)</option>
                 </select>
               </div>
               <label className="row">
@@ -323,13 +370,18 @@ export function App() {
                 Keep the microphone ready so the first word is never clipped (Windows will show the microphone as in use)
               </label>
             </div>
+            <AiSettings />
+            <UploadsCard />
             <div className="card">
               <h3>Privacy</h3>
               <label className="row">
                 <input type="checkbox" checked={settings.save_audio === "true"} onChange={(e) => set("save_audio", String(e.target.checked))} />
                 Keep the recording of each dictation on this computer for {settings.audio_retention_days ?? "7"} days
               </label>
-              <p className="dim">Everything stays on this computer. Dictations are kept out of Windows clipboard history.</p>
+              <p className="dim">
+                Audio never leaves this computer. Text is sent only if you turn on AI clean-up above, and every such upload is
+                listed under "Data that left this computer". Dictations are kept out of Windows clipboard history.
+              </p>
             </div>
             <div className="card">
               <h3>Text size</h3>

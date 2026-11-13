@@ -4,29 +4,33 @@
 HIPAA certified, and has no agreements with any provider about data retention. Those are audits
 and contracts of organisations, not features of code. What follows are plain technical controls.
 
-## In place today
+## In place
 
-| Control | How |
-|---|---|
-| No secrets in the repository | `.gitignore` excludes key and keystore files; CI runs a gitleaks secret scan on every push |
-| No network use in the core | `crates/core` has no HTTP dependency; it compiles for wasm32 with no I/O |
-| Reproducible dependency set | `Cargo.lock` is committed |
-| CI has read-only repository permission | `permissions: contents: read` in the workflow |
-| Cleanup cannot invent content | Deterministic rules only remove or reformat; golden fixtures enforce it |
+| Control | How | Tested |
+|---|---|---|
+| Audio never leaves the device | Speech recognition runs locally (whisper.cpp); no code uploads audio | Code review |
+| Text leaves only after consent | AI clean-up runs only when a provider is chosen, a consent row is recorded and (where needed) a key exists | Consent storage tested; `ai_config` itself: code review only |
+| Keys only in Windows Credential Manager | `credentials.rs`; never in the database, files or logs | Round-trip test |
+| Every upload logged locally | `events` table, shown under "Data that left this computer" | Database test |
+| AI cannot add facts | `llm::accept` rejects new numbers, names, e-mails, links, rewrites, over-long answers, damaged snippets | 8 unit tests |
+| AI time limit | 2.5 s, then the built-in rules | Fake-server test |
+| Provider addresses | Must be `https://`, or `localhost` for a model on this computer | Code |
+| Dictations out of clipboard history | `ExcludeClipboardContentFromMonitorProcessing` + `CanIncludeInClipboardHistory=0` + `CanUploadToCloudClipboard=0` | Clipboard test |
+| Clipboard restored only if untouched | Sequence-number check | Clipboard test |
+| No paste into the wrong window | Foreground checked at key-down, before and right before the paste | Self-test |
+| No typing into admin apps | Elevation check, then copy-only fallback | Code; manual test not run |
+| Model files verified | SHA-256 against fixed values; damaged downloads deleted | Unit test |
+| No secrets in the repository | `.gitignore`; gitleaks scans the full history in CI | CI |
+| Web views have no file, shell or network access | Tauri capability grants only the app's own commands | Config |
 
-## Planned (not built yet)
+## Planned
 
 | Control | Stage |
 |---|---|
-| API keys in Windows Credential Manager / Android Keystore | 2, 5 |
-| Per-provider consent screen with data-policy note | 2 |
-| Local-only mode | 2 |
-| Local upload log ("Data that left this device") | 2 |
-| Dictations excluded from Windows clipboard history and cloud clipboard | 1 |
-| Retention timers and "Delete all data" | 2, 3 |
-| Model downloads from fixed addresses with SHA-256 checks | 1 |
+| Local-only switch blocking all network use | 9 |
+| Text retention timer (90 days) and "Delete all data" | 3 |
 | Signed update manifests | 8 |
-| Logs exportable with secrets removed | 9 |
+| Log export with secrets removed | 9 |
 
 ## Without code signing
 

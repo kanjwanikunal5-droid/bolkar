@@ -11,15 +11,19 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use app_asr::{audio as asr_audio, Options, WhisperEngine};
-use app_core::dictionary::Dictionary;
+use app_core::dictionary::{Dictionary, Term};
+use app_core::llm;
 use app_core::pipeline::{self, Level, Settings};
-use app_core::snippets::SnippetSet;
+use app_core::snippets::{Snippet, SnippetSet};
 
 use crate::audio::Recorder;
 use crate::hotkey::{self, Action};
 use crate::insert::{self, app_rules, Outcome, Target};
 use crate::overlay::{self, PillState};
-use crate::{db, models, AppState};
+use crate::{db, models, providers, AppState};
+
+/// The AI clean-up must answer within this time, or the rules are used instead.
+const AI_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// Hands-free recording warns at 19 minutes and stops (and transcribes) at 20.
 const HANDS_FREE_WARN: Duration = Duration::from_secs(19 * 60);
@@ -225,6 +229,15 @@ impl Controller {
                 }
             }
             Action::PasteLast => self.paste_last(),
+            Action::FixLast => {
+                // Opens the app on the last dictation, ready to correct it.
+                if let Some(w) = self.app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+                let _ = self.app.emit("fix-last", ());
+            }
             Action::CopyLast => {
                 let text = self.state().db.lock().ok().and_then(|c| db::last_text(&c));
                 match text.map(|t| insert::clipboard::write_text_private(&t)) {
@@ -347,6 +360,99 @@ impl Controller {
         Ok(())
     }
 
+    /// The user's dictionary and snippets, read fresh for each dictation.
+    fn vocabulary(&self) -> (Dictionary, SnippetSet) {
+        let state = self.state();
+        let Ok(conn) = state.db.lock() else {
+            return (Dictionary::default(), SnippetSet::default());
+        };
+        let terms = db::list_terms(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| Term {
+                term: t.term,
+                spoken_variants: t.spoken_variants,
+                auto_replace: t.auto_replace,
+            })
+            .collect();
+        let snippets = db::list_snippets(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| Snippet {
+                trigger: s.trigger,
+                body: s.body,
+            })
+            .collect();
+        (Dictionary::new(terms), SnippetSet::new(snippets))
+    }
+
+    /// Clean-up: the AI provider when one is set up and agreed to, otherwise (or when it
+    /// fails, is slow, or its answer fails the checks) the built-in rules.
+    /// Returns the text and who produced it.
+    #[allow(clippy::too_many_arguments)]
+    fn clean(
+        &self,
+        raw: &str,
+        settings: &Settings,
+        dictionary: &Dictionary,
+        snippets: &SnippetSet,
+        category: app_rules::Category,
+        language: &str,
+        hwnd: Option<isize>,
+    ) -> (String, String) {
+        let prepared = pipeline::prepare(raw, settings, dictionary, snippets);
+        let rules = || pipeline::finish(&prepared, settings).text;
+        if settings.level == Level::Literal {
+            return (rules(), "rules".into());
+        }
+        let Some(cfg) = crate::ai_config(&self.state()) else {
+            return (rules(), "rules".into());
+        };
+        self.pill(
+            PillState {
+                state: "polishing",
+                message: "Polishing (AI)...".into(),
+                ..Default::default()
+            },
+            hwnd,
+            None,
+        );
+        let request = llm::build_cleanup(
+            &prepared,
+            settings.level,
+            llm::AppCategory::parse(&format!("{category:?}")),
+            language,
+            dictionary.terms(),
+        );
+        let result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+        if let Ok(conn) = self.state().db.lock() {
+            let bytes = request.system.len() + request.user.len();
+            let outcome = match &result {
+                Ok(_) => "ok".to_string(),
+                Err(e) => e.to_string(),
+            };
+            db::log_event(
+                &conn,
+                "upload",
+                &format!(
+                    "{} ({}): dictation text for clean-up, {bytes} bytes, {outcome}",
+                    cfg.provider, cfg.model
+                ),
+            );
+        }
+        let verdict = result
+            .map_err(|e| e.to_string())
+            .and_then(|answer| llm::parse_reply(&answer.content).map_err(|e| e.to_string()))
+            .and_then(|reply| {
+                llm::accept(&reply, &prepared, raw, dictionary.terms(), settings.level)
+                    .map_err(|e| e.to_string())
+            });
+        match verdict {
+            Ok(text) => (text, cfg.provider.clone()),
+            Err(why) => (rules(), format!("rules (AI skipped: {why})")),
+        }
+    }
+
     /// Audio -> text -> cleanup -> (optional) insertion -> history.
     fn process(
         &mut self,
@@ -371,8 +477,12 @@ impl Controller {
         asr_audio::normalise_quiet(&mut samples, 0.05, 8.0);
 
         let language = self.state().setting("language");
+        let (dictionary, snippets) = self.vocabulary();
+        let hint = dictionary.recogniser_hint(400);
         let options = Options {
             language: (language != "auto").then(|| language.clone()),
+            // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
+            initial_prompt: (!hint.is_empty()).then_some(hint),
             ..Default::default()
         };
         let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
@@ -416,13 +526,19 @@ impl Controller {
             level,
             spoken_commands: self.state().setting("spoken_commands") == "true",
         };
-        let cleaned = pipeline::run(
+        let category = target
+            .as_ref()
+            .map(|t| app_rules::rule_for(&t.process, &t.title).category)
+            .unwrap_or(app_rules::Category::Other);
+        let (final_text, cleanup) = self.clean(
             &raw,
             &settings,
-            &Dictionary::default(),
-            &SnippetSet::default(),
+            &dictionary,
+            &snippets,
+            category,
+            &language,
+            hwnd,
         );
-        let final_text = cleaned.text;
 
         let outcome = if do_insert {
             Some(match &target {
@@ -475,6 +591,7 @@ impl Controller {
                 Some(Outcome::Failed { message }) => Some(message.clone()),
                 _ => None,
             },
+            cleanup,
         };
         if let Ok(conn) = self.state().db.lock() {
             let _ = db::insert_dictation(&conn, &record);
