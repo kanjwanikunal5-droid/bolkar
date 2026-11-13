@@ -14,3 +14,4 @@ pub mod llm;
 pub mod metrics;
 pub mod pipeline;
 pub mod snippets;
+pub mod summary;
