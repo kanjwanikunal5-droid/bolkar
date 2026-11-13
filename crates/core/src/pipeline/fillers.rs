@@ -94,16 +94,35 @@ fn match_filler(toks: &[Tok], del: &[bool], i: usize) -> Option<(usize, Kind)> {
 
 /// True when exactly one word stands between the start of the sentence and this comma
 /// ("So, um, I think"): that comma belongs to the opening word and is kept.
+///
+/// A short greeting is treated the same way: "Hi Rahul, um, I wanted" keeps its comma.
 fn single_word_before(toks: &[Tok], del: &[bool], comma: usize) -> bool {
-    let Some(w) = prev_sig(toks, del, comma) else {
-        return false;
-    };
-    if !matches!(toks[w], Tok::Word(_)) {
-        return false;
+    const GREETINGS: &[&str] = &[
+        "hi", "hello", "hey", "dear", "thanks", "thank", "okay", "ok", "namaste", "good",
+    ];
+    let mut words: Vec<String> = Vec::new();
+    let mut at = comma;
+    while let Some(w) = prev_sig(toks, del, at) {
+        // A line break starts a new sentence, whatever comes before it.
+        if newline_between(toks, w, at) {
+            break;
+        }
+        match &toks[w] {
+            Tok::Word(word) => words.push(word.to_lowercase()),
+            t if is_sentence_end(t) => break,
+            _ => return false, // another comma or symbol: this is mid-sentence
+        }
+        at = w;
+        if words.len() > 3 {
+            return false;
+        }
     }
-    match prev_sig(toks, del, w) {
-        None => true,
-        Some(b) => is_sentence_end(&toks[b]) || newline_between(toks, b, w),
+    match words.len() {
+        1 => true,
+        2 | 3 => words
+            .last()
+            .is_some_and(|first| GREETINGS.contains(&first.as_str())),
+        _ => false,
     }
 }
 

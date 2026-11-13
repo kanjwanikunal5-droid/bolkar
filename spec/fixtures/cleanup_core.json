@@ -162,6 +162,18 @@
       "expected": "Dheere dheere kaam ho raha hai."
     },
     {
+      "id": "real-001", "category": "real-transcript",
+      "note": "Exact output of whisper large-v3-turbo on a test recording (12 Nov 2026).",
+      "input": "Hi Rahul, um, I wanted to share the update on the budget review. Revenue increased by 15%. Sorry, it increased by 12%. We need three things. First, the variance analysis. Second, the forecast for next quarter. Third, the hiring plan. Let us meet on Monday at 3pm to discuss.",
+      "expected": "Hi Rahul, I wanted to share the update on the budget review. Revenue increased by 12%. We need three things.\n1. The variance analysis\n2. The forecast for next quarter\n3. The hiring plan\n\nLet us meet on Monday at 3pm to discuss."
+    },
+    {
+      "id": "fl-005", "category": "filler",
+      "note": "A greeting keeps its comma when the hesitation after it is removed.",
+      "input": "Hello team, uh, the numbers are final.",
+      "expected": "Hello team, the numbers are final."
+    },
+    {
       "id": "lit-001", "category": "level",
       "level": "LITERAL",
       "note": "LITERAL keeps fillers.",

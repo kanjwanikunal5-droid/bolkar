@@ -1,0 +1,22 @@
+﻿[package]
+name = "app-asr"
+description = "Local speech recognition engines (desktop)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# GPU acceleration through Vulkan. Needs the Vulkan SDK at build time.
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+whisper-rs = "0.16"
+hound = "3.5"
+regex.workspace = true
+serde.workspace = true
+
+[[bin]]
+name = "rtf"
+path = "src/bin/rtf.rs"
+test = false

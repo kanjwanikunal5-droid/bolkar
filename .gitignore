@@ -28,3 +28,9 @@ dist/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Tauri generated files
+apps/desktop/src-tauri/gen/
+/apps/desktop/app-icon.png
+apps/desktop/src-tauri/icons/android/
+apps/desktop/src-tauri/icons/ios/

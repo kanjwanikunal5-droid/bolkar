@@ -149,9 +149,34 @@ pub fn format_lists(text: &str, changes: &mut Vec<Change>) -> String {
     let list_start = run[0].start;
     let last_item_start = run[run.len() - 1].end;
     // The list ends at a paragraph break, otherwise at the end of the text.
-    let list_end = text[last_item_start..]
+    let mut list_end = text[last_item_start..]
         .find("\n\n")
         .map_or(text.len(), |p| last_item_start + p);
+
+    // "Third, the hiring plan. Let us meet on Monday." - when every earlier item is a single
+    // sentence, the last item is too, and what follows it is ordinary text again.
+    let mut prose_follows = false;
+    let earlier_are_single = run.windows(2).all(|w| {
+        let item = text[w[0].end..w[1].start]
+            .trim()
+            .trim_end_matches(['.', '?', '!', ',', ';', ' ']);
+        !INNER_SENTENCE.is_match(item)
+    });
+    if earlier_are_single {
+        let last = &text[last_item_start..list_end];
+        let sentence_end = INNER_SENTENCE.find_iter(last).find(|m| {
+            !last[m.end()..]
+                .trim_start()
+                .starts_with(|c: char| c.is_lowercase())
+        });
+        if let Some(m) = sentence_end {
+            let cut = last_item_start + m.start() + 1;
+            if !text[cut..list_end].trim().is_empty() {
+                list_end = cut;
+                prose_follows = true;
+            }
+        }
+    }
 
     let mut items = Vec::with_capacity(run.len());
     for (i, m) in run.iter().enumerate() {
@@ -175,7 +200,12 @@ pub fn format_lists(text: &str, changes: &mut Vec<Change>) -> String {
         out.push('\n');
     }
     out.push_str(&formatted);
-    out.push_str(&text[list_end..]);
+    if prose_follows {
+        out.push_str("\n\n");
+        out.push_str(text[list_end..].trim_start());
+    } else {
+        out.push_str(&text[list_end..]);
+    }
 
     changes.push(Change {
         kind: ChangeKind::List,

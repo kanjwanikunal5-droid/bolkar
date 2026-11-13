@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Only these packages may run install scripts (esbuild downloads its own binary).
+allowBuilds:
+  esbuild: true
