@@ -45,6 +45,23 @@ You can pause while holding the keys; nothing stops until you let go.
 While you dictate, a small pill appears at the bottom of the screen: **✕** cancels, the
 moving waveform shows it hears you, **✓** finishes (useful in hands-free mode).
 
+## English and Hinglish
+
+The default language is **English + Hinglish**: speak English and you get English; speak
+Hindi mixed with English and you get Hinglish in Roman letters, the way you type in WhatsApp
+("Bhai aaj ke liye sorry yaar, mera dimaag kaam nahi kar raha tha."). Press `Alt` + `Shift` +
+`H` to switch between English + Hinglish, English only and Hinglish only (the pill shows which).
+If you speak very quietly in a noisy place, choose the mode yourself: automatic detection is
+less reliable there.
+
+## On your phone (web app)
+
+Open https://kanjwanikunal5-droid.github.io/bolkar/ in Chrome (Android) or Safari (iPhone).
+The first time, paste your Groq key and choose a passphrase (the key is stored encrypted in
+that browser only). Tap **Speak**, talk, tap **Stop**, then **Copy** and paste into WhatsApp or
+any app. Use the browser's "Add to Home screen" to install it like an app. Phones cannot let a
+web page type into other apps, so copy and paste is the way.
+
 ## Meeting notes
 
 1. Open the app -> **Meeting notes**. Give a title, choose **My microphone** and/or
