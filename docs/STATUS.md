@@ -154,6 +154,62 @@ notes with "Not specified" for missing owners/deadlines, copy notes, saved in th
 Building works. Upgrading the installed copy silently failed with exit code 2 on the last two
 attempts (it had worked earlier the same day); the new program file was copied into place
 instead, and its fingerprint matches the build. To investigate before sharing the installer.
+## Update 13 November 2026 (night): Hinglish, English accuracy, meetings, web app
+
+All numbers below come from SYNTHETIC speech (Windows voices, including the Indian-English
+voices Heera and Ravi reading Roman Hinglish). They compare settings; they are not proof of
+accuracy on the owner's own voice. Real recordings are still needed for that.
+
+### Hinglish typed in Roman letters (new default: "English + Hinglish")
+12 Hinglish clips (6 sentences x 2 voices), scored against the Roman text:
+
+| Route | Word errors | Letter errors | Output |
+|---|---|---|---|
+| Whisper set to English | 67% | 40% | translated into English (wrong) |
+| Whisper Hindi + Roman example (offline fallback) | 20.5% | 6.9% | Roman Hinglish |
+| Whisper Hindi -> AI converts script only (main route) | 12.9% | 4.1% | Roman Hinglish |
+
+Sample: "Bhai aaj ke liye sorry yaar, mera dimaag kaam nahi kar raha tha."
+English vs Hinglish is decided per dictation from Whisper's language scores
+(`app_asr::is_hinglish`): measured on 48 clips, normal-volume English 12/12 and quiet English
+12/12 stay English, normal-volume Hinglish 12/12 goes Hinglish; very quiet noisy Hinglish only
+6/12. Alt+Shift+H switches English+Hinglish / English only / Hinglish only.
+The AI conversion is checked (no Devanagari left, same words count, same numbers); if the AI
+is unavailable or refuses, the offline route is used. Groq's free per-minute limit was hit
+during testing; normal use makes far fewer requests.
+
+### English accuracy
+- Quiet + noisy versions of the English clips (6% volume plus noise): with the dictionary hint
+  the text is identical to the clean clips (remaining "errors" are digits vs words, e.g. "18%"
+  vs "eighteen percent"). Without the hint, "EBITDA" became "EVI TDA".
+- Beam search (5) was measured and NOT adopted: no gain on clean audio, slightly worse on hard
+  audio (13.7% vs 11.8%), and 0.3 s slower.
+
+### Meeting notes benchmark
+13-line, 4-voice finance meeting (90 s) played through the speakers and recorded by the
+installed app (throwaway data folder, AI off):
+- computer-sound track: 90.6-91 s recorded for 90 s played, nothing lost;
+- transcript vs script: **1.12% word errors** (179 words); transcription took 3 s;
+- with the microphone on as well: the laptop's microphone array suppresses its own speakers,
+  so the mic track was near-silent; Whisper's "you / thank you" on near-silence was dropped by
+  the guard, so no false "Me" lines appeared. Echo removal (`summary::drop_echo`) is covered
+  by a unit test; a real speaker-echo case was not reproduced.
+- Golden topic test with the real AI passed earlier today. A real Meet/Zoom call: not run.
+
+### Pill
+The black box behind the pill came from the shared style sheet painting the page background.
+The pill page now forces a transparent background; checked in the installed app
+(background rgba(0,0,0,0)).
+
+### Stage 4 - web app (PWA), first version
+`apps/web`: phone/browser dictation with the owner's own Groq key (encrypted with a passphrase
+in the browser), English + Hinglish modes, Roman Hinglish conversion, the SAME clean-up rules
+and AI checks as the desktop (core compiled to WebAssembly), copy button, local history,
+installable, offline shell. Checked in a browser: page and rules load; Groq accepts requests
+from a web page; key saved, wrong passphrase refused, right passphrase unlocks.
+NOT run: a real dictation (needs the owner's key in the browser), iPhone Safari, Android Chrome.
+Publishing: `.github/workflows/deploy-web.yml` builds and deploys to GitHub Pages once Pages is
+enabled for the repository.
 ## Measured accuracy per language
 
 **None yet.** No real recordings have been scored. No accuracy figure is shown anywhere in the app.

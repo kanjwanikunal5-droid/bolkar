@@ -201,6 +201,44 @@ fn keep_points(
         .collect()
 }
 
+/// With speakers instead of headphones, the microphone also records the other side, so the
+/// same words appear as "Me" and as "Others". A "Me" segment that overlaps an "Others"
+/// segment in time and shares most of its words is that echo, and is removed.
+/// Returns how many segments were removed. Ids are renumbered afterwards.
+pub fn drop_echo(segments: &mut Vec<Segment>) -> usize {
+    fn words(t: &str) -> std::collections::HashSet<String> {
+        t.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(str::to_lowercase)
+            .collect()
+    }
+    let others: Vec<(u64, u64, std::collections::HashSet<String>)> = segments
+        .iter()
+        .filter(|s| s.speaker == "Others")
+        .map(|s| (s.start_ms, s.end_ms, words(&s.text)))
+        .collect();
+    let before = segments.len();
+    segments.retain(|s| {
+        if s.speaker != "Me" {
+            return true;
+        }
+        let mine = words(&s.text);
+        if mine.is_empty() {
+            return true;
+        }
+        let echo = others.iter().any(|(start, end, theirs)| {
+            let overlap = s.start_ms < end + 3000 && *start < s.end_ms + 3000;
+            let shared = mine.intersection(theirs).count();
+            overlap && shared * 10 >= mine.len() * 6
+        });
+        !echo
+    });
+    for (i, s) in segments.iter_mut().enumerate() {
+        s.id = format!("s{}", i + 1);
+    }
+    before - segments.len()
+}
+
 const SUMMARY_SPEC: &str = include_str!("../../../spec/prompts/summary.md");
 
 /// The meeting-summary system prompt from `spec/prompts/summary.md`.
@@ -633,6 +671,34 @@ mod tests {
             ["12%", "₹50,000"]
         );
         assert_eq!(v.dropped.len(), 3, "{:#?}", v.dropped);
+    }
+
+    #[test]
+    fn echo_of_the_other_side_is_removed_but_own_words_stay() {
+        let seg = |speaker: &str, start: u64, text: &str| Segment {
+            id: String::new(),
+            start_ms: start,
+            end_ms: start + 8000,
+            speaker: speaker.into(),
+            text: text.into(),
+        };
+        let mut s = vec![
+            seg("Others", 0, "Sales increased by 12 percent this quarter."),
+            seg("Me", 500, "Sales increased by twelve percent this quarter."), // echo through the speakers
+            seg("Me", 9000, "Great, then let us hire two more people."),
+            seg("Others", 60000, "Agreed."),
+            seg(
+                "Me",
+                200000,
+                "Sales increased this quarter, I said that last week too.",
+            ), // far away in time
+        ];
+        assert_eq!(drop_echo(&mut s), 1);
+        assert_eq!(s.iter().filter(|x| x.speaker == "Me").count(), 2);
+        assert_eq!(
+            s.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            ["s1", "s2", "s3", "s4"]
+        );
     }
 
     #[test]

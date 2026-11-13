@@ -1,4 +1,4 @@
-//! Desktop app: system-wide dictation for Windows.
+﻿//! Desktop app: system-wide dictation for Windows.
 
 mod audio;
 mod controller;
@@ -234,7 +234,7 @@ fn disable_power_throttling() {
     }
 }
 
-/// The pill's buttons: "cancel" (✕) or "finish" (✓).
+/// The pill's buttons: "cancel" (âœ•) or "finish" (âœ“).
 #[tauri::command]
 fn pill_action(state: State<AppState>, action: String) -> Result<(), String> {
     let action = match action.as_str() {
@@ -284,7 +284,7 @@ const SETTINGS: &[(&str, &str)] = &[
             "small"
         },
     ),
-    ("language", "auto"),
+    ("language", "en-hinglish"),
     ("level", "LIGHT"),
     ("use_gpu", "true"),
     // On by default: on this laptop the microphone takes 0.6-1.8 s to start, so opening it
@@ -762,6 +762,10 @@ fn get_status(state: State<AppState>) -> Status {
             (
                 "Alt + Shift + F",
                 "Fix last dictation (teaches the dictionary)",
+            ),
+            (
+                "Alt + Shift + H",
+                "Switch language: English + Hinglish / English only / Hinglish only",
             ),
         ],
     }

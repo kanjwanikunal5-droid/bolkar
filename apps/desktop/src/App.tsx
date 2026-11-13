@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+﻿import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
 import { APP_NAME } from "./brand";
@@ -8,8 +8,10 @@ import { AiSettings, DictionaryPage, FixBox, MicMeter, SnippetsPage, UploadsCard
 type Page = "home" | "history" | "meetings" | "dictionary" | "snippets" | "settings";
 
 const LANGUAGES: [string, string][] = [
-  ["auto", "Detect automatically"],
-  ["en", "English"],
+  ["en-hinglish", "English + Hinglish (automatic, Hinglish in Roman letters)"],
+  ["en", "English only"],
+  ["hinglish", "Hinglish only (Roman letters)"],
+  ["auto", "Any language (detect automatically)"],
   ["hi", "Hindi"],
   ["mr", "Marathi"],
   ["ta", "Tamil"],
@@ -53,7 +55,7 @@ function DictationRow({ d, onChanged, startFixing = false }: { d: Dictation; onC
     <div className="dictation">
       <div className="row spread">
         <span className="dim">
-          {when(d.created_at)} · {d.app_process || "no app"} · {d.word_count} words
+          {when(d.created_at)} Â· {d.app_process || "no app"} Â· {d.word_count} words
         </span>
         <span className="row">
           <span className={`tag ${d.inserted ? "ok" : ""}`}>{d.inserted ? "inserted" : d.insert_method || "not inserted"}</span>
@@ -162,7 +164,7 @@ function ModelList({ selected, onSelect }: { selected: string; onSelect: (id: st
               </span>
             </div>
             <div className="dim">
-              {m.size_mb} MB on disk · needs about {m.ram_mb} MB of memory{m.note ? ` · ${m.note}` : ""}
+              {m.size_mb} MB on disk Â· needs about {m.ram_mb} MB of memory{m.note ? ` Â· ${m.note}` : ""}
             </div>
           </div>
         );
@@ -281,7 +283,7 @@ export function App() {
                 <strong>{status?.words_this_week ?? 0}</strong> words dictated in the last 7 days
               </span>
               <span className="dim">
-                Speech recognition: on this device{status?.gpu_build && settings.use_gpu === "true" ? " (graphics card)" : ""} ·
+                Speech recognition: on this device{status?.gpu_build && settings.use_gpu === "true" ? " (graphics card)" : ""} Â·
                 audio never leaves this computer
               </span>
             </div>
@@ -404,7 +406,7 @@ export function App() {
             </div>
             <p className="dim">
               {APP_NAME} {status?.version}
-              {status?.running_as_admin ? " · running as administrator" : ""}
+              {status?.running_as_admin ? " Â· running as administrator" : ""}
             </p>
           </>
         )}

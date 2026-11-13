@@ -20,3 +20,8 @@ serde.workspace = true
 name = "rtf"
 path = "src/bin/rtf.rs"
 test = false
+
+[[bin]]
+name = "batch"
+path = "src/bin/batch.rs"
+test = false

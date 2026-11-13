@@ -34,3 +34,7 @@ apps/desktop/src-tauri/gen/
 /apps/desktop/app-icon.png
 apps/desktop/src-tauri/icons/android/
 apps/desktop/src-tauri/icons/ios/
+
+# Generated WebAssembly bindings (built by scripts/build-wasm.mjs)
+apps/web/src/wasm/
+apps/web/dist/

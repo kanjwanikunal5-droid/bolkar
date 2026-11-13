@@ -1,4 +1,4 @@
-//! The shortcut state machine. Pure logic, no Windows calls, so it is fully unit-tested.
+﻿//! The shortcut state machine. Pure logic, no Windows calls, so it is fully unit-tested.
 //!
 //! Defaults:
 //! - hold Ctrl+Win            push-to-talk
@@ -30,6 +30,8 @@ pub enum Action {
     PasteLast,
     CopyLast,
     FixLast,
+    /// Alt+Shift+H: English + Hinglish (auto) -> English only -> Hinglish only.
+    CycleLanguage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -240,6 +242,8 @@ impl Machine {
                     swallow(self, Action::CopyLast)
                 } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_F {
                     swallow(self, Action::FixLast)
+                } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_H {
+                    swallow(self, Action::CycleLanguage)
                 } else {
                     Decision::default()
                 }
@@ -427,6 +431,8 @@ mod tests {
         assert_eq!(m.on_key(VK_X, true, 30).action, Some(Action::CopyLast));
         let d = m.on_key(VK_F, true, 40);
         assert_eq!((d.action, d.swallow), (Some(Action::FixLast), true));
+        let d = m.on_key(VK_H, true, 50);
+        assert_eq!((d.action, d.swallow), (Some(Action::CycleLanguage), true));
         // Plain Z is just a letter.
         let mut m = Machine::new();
         assert_eq!(m.on_key(VK_Z, true, 0), Decision::default());

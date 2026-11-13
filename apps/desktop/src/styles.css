@@ -367,3 +367,9 @@ textarea.practice {
     transition: none;
   }
 }
+/* The pill window is see-through: only the buttons and capsule are drawn. */
+html.pill-page,
+html.pill-page body {
+  background: transparent !important;
+}
+

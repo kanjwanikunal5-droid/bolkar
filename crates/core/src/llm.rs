@@ -1,4 +1,4 @@
-﻿//! AI clean-up support: prompt building, answer parsing and validation.
+//! AI clean-up support: prompt building, answer parsing and validation.
 //!
 //! No network code lives here. The desktop app sends the request and hands the answer back
 //! to [`accept`]. An answer is used only if it passes every check; otherwise the caller falls
@@ -69,6 +69,58 @@ pub fn cleanup_template() -> &'static str {
         body.replace('\r', "")
     });
     &TEMPLATE
+}
+
+const TRANSLIT_SPEC: &str = include_str!("../../../spec/prompts/transliterate.md");
+
+/// The Roman Hinglish system prompt from `spec/prompts/transliterate.md`.
+pub fn transliterate_prompt() -> String {
+    let after = TRANSLIT_SPEC
+        .split_once("## Roman Hinglish system prompt")
+        .map_or("", |(_, rest)| rest);
+    let body = after.split_once("```\n").map_or("", |(_, rest)| rest);
+    body.split_once("\n```")
+        .map_or("", |(b, _)| b)
+        .replace('\r', "")
+}
+
+pub fn has_devanagari(s: &str) -> bool {
+    s.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+}
+
+/// Checks a script conversion: valid JSON, no Devanagari left, the same numbers, and about
+/// the same number of words (a script change never adds or removes words).
+pub fn parse_transliteration(content: &str, source: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        text: String,
+    }
+    let (s, e) = (content.find('{'), content.rfind('}'));
+    let reply: Reply = match (s, e) {
+        (Some(s), Some(e)) if e > s => {
+            serde_json::from_str(&content[s..=e]).map_err(|e| format!("invalid JSON: {e}"))?
+        }
+        _ => return Err("no JSON".into()),
+    };
+    let out = reply.text.trim().to_string();
+    if out.is_empty() || has_devanagari(&out) {
+        return Err("conversion incomplete".into());
+    }
+    let count = |t: &str| t.split_whitespace().count();
+    let (a, b) = (count(source), count(&out));
+    if b * 10 < a * 8 || b * 10 > a * 12 + 10 {
+        return Err(format!("word count changed ({a} -> {b})"));
+    }
+    let nums = |t: &str| -> Vec<String> {
+        NUMBER
+            .find_iter(t)
+            .map(|m| number_key(m.as_str()))
+            .collect()
+    };
+    if nums(source) != nums(&out) {
+        return Err("numbers changed".into());
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -653,6 +705,36 @@ mod tests {
         assert_eq!(
             check("Send it to Rahul, sorry, to Priya.", "Send it to Priya.").unwrap(),
             "Send it to Priya."
+        );
+    }
+
+    #[test]
+    fn transliteration_checks() {
+        assert!(transliterate_prompt().starts_with("You convert Hindi written in Devanagari"));
+        let src = "मेरा दिमाग काम नहीं कर रहा था, 4 बजे.";
+        assert_eq!(
+            parse_transliteration(
+                r#"{"text":"Mera dimaag kaam nahi kar raha tha, 4 baje."}"#,
+                src
+            )
+            .unwrap(),
+            "Mera dimaag kaam nahi kar raha tha, 4 baje."
+        );
+        assert!(
+            parse_transliteration(r#"{"text":"Mera दिमाग kaam"}"#, src).is_err(),
+            "Devanagari left"
+        );
+        assert!(
+            parse_transliteration(r#"{"text":"My brain was not working at 4."}"#, src).is_err(),
+            "translated"
+        );
+        assert!(
+            parse_transliteration(
+                r#"{"text":"Mera dimaag kaam nahi kar raha tha, 5 baje."}"#,
+                src
+            )
+            .is_err(),
+            "number changed"
         );
     }
 

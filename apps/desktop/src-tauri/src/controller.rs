@@ -1,4 +1,4 @@
-//! The dictation controller: one thread that owns the speech engine and runs each
+﻿//! The dictation controller: one thread that owns the speech engine and runs each
 //! dictation from key-down to inserted text.
 
 use std::path::PathBuf;
@@ -21,6 +21,11 @@ use crate::hotkey::{self, Action};
 use crate::insert::{self, app_rules, Outcome, Target};
 use crate::overlay::{self, PillState};
 use crate::{db, models, providers, AppState};
+
+/// Shown to Whisper to make it write Hinglish in Roman letters when the AI conversion is not
+/// available. Measured 13 Nov 2026: 20% word errors on synthetic Hinglish clips (vs 13% with
+/// the AI conversion).
+const ROMAN_HINGLISH_EXAMPLE: &str = "Haan bhai, aaj kya plan hai? Main kaam kar raha hoon, mujhe thoda time chahiye. Kal meeting 4 baje hai, tum time pe aa jana. Yaar, mera dimaag kaam nahi kar raha tha. Report ready hai, main shaam tak bhej dunga. Theek hai, dil pe mat lena.";
 
 /// The AI clean-up must answer within this time, or the rules are used instead.
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -245,6 +250,23 @@ impl Controller {
                 }
             }
             Action::PasteLast => self.paste_last(),
+            Action::CycleLanguage => {
+                let next = match self.state().setting("language").as_str() {
+                    "en-hinglish" => "en",
+                    "en" => "hinglish",
+                    _ => "en-hinglish",
+                };
+                if let Ok(conn) = self.state().db.lock() {
+                    let _ = db::set_setting(&conn, "language", next);
+                }
+                let label = match next {
+                    "en" => "English only",
+                    "hinglish" => "Hinglish only",
+                    _ => "English + Hinglish (auto)",
+                };
+                let _ = self.app.emit("dictation-added", "");
+                self.message("info", label, None);
+            }
             Action::FixLast => {
                 // Opens the app on the last dictation, ready to correct it.
                 if let Some(w) = self.app.get_webview_window("main") {
@@ -415,10 +437,36 @@ impl Controller {
             }
         }
         segments.sort_by_key(|s| s.start_ms);
-        for (i, s) in segments.iter_mut().enumerate() {
-            s.id = format!("s{}", i + 1);
-        }
+        // Also renumbers the ids s1, s2, ...
+        app_core::summary::drop_echo(&mut segments);
         Ok(segments)
+    }
+
+    /// Devanagari -> Roman Hinglish with the AI provider (script only; checked by
+    /// `llm::parse_transliteration`).
+    fn to_roman_hinglish(&self, text: &str) -> Result<String, String> {
+        let cfg = crate::ai_config(&self.state()).ok_or("AI clean-up is off")?;
+        let system = llm::transliterate_prompt();
+        let user = serde_json::json!({ "text": text }).to_string();
+        let result = providers::chat(&cfg, &system, &user, AI_TIMEOUT);
+        if let Ok(conn) = self.state().db.lock() {
+            let outcome = result
+                .as_ref()
+                .map(|_| "ok".to_string())
+                .unwrap_or_else(|e| e.to_string());
+            db::log_event(
+                &conn,
+                "upload",
+                &format!(
+                    "{} ({}): dictation text for Roman Hinglish, {} bytes, {outcome}",
+                    cfg.provider,
+                    cfg.model,
+                    system.len() + user.len()
+                ),
+            );
+        }
+        let answer = result.map_err(|e| e.to_string())?;
+        llm::parse_transliteration(&answer.content, text)
     }
 
     /// The user's dictionary and snippets, read fresh for each dictation.
@@ -555,7 +603,13 @@ impl Controller {
         let language = self.state().setting("language");
         let (dictionary, snippets) = self.vocabulary();
         let hint = dictionary.recogniser_hint(400);
-        let lang = (language != "auto").then(|| language.clone());
+        // "en-hinglish" = English or Hinglish, decided per dictation; "hinglish" = always Hinglish.
+        let hinglish_mode = matches!(language.as_str(), "en-hinglish" | "hinglish");
+        let lang = match language.as_str() {
+            "auto" | "en-hinglish" => None,
+            "hinglish" => Some("hi".to_string()),
+            other => Some(other.to_string()),
+        };
         let started = Instant::now();
 
         // Cloud recognition (only after the user agreed to send audio), else on this computer.
@@ -596,23 +650,73 @@ impl Controller {
                 }
             }
         }
+        let mut hinglish_route = language == "hinglish";
         let (raw, engine_label) = match recognised {
             Some(r) => r,
             None => {
                 self.ensure_engine()?;
-                let options = Options {
-                    language: lang.clone(),
-                    // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
-                    initial_prompt: (!hint.is_empty()).then_some(hint.clone()),
-                    ..Default::default()
-                };
                 let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+                // English or Hinglish? Whisper's own language detector decides (measured
+                // threshold, see app_asr::ENGLISH_SURE).
+                if language == "en-hinglish" && has_speech {
+                    let p = loaded
+                        .engine
+                        .language_probabilities(&samples, &["en", "hi"])
+                        .unwrap_or_else(|_| vec![1.0, 0.0]);
+                    hinglish_route = app_asr::is_hinglish(p[0], p[1]);
+                }
+                let options = if hinglish_route {
+                    // Hindi recognition (Devanagari), converted to Roman below. No English
+                    // hint here: it pushes Whisper into translating.
+                    Options {
+                        language: Some("hi".into()),
+                        ..Default::default()
+                    }
+                } else {
+                    Options {
+                        language: if language == "en-hinglish" {
+                            Some("en".into())
+                        } else {
+                            lang.clone()
+                        },
+                        // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
+                        initial_prompt: (!hint.is_empty()).then_some(hint.clone()),
+                        ..Default::default()
+                    }
+                };
                 let transcript = loaded.engine.transcribe(&samples, &options)?;
                 (transcript.text.trim().to_string(), loaded.label.clone())
             }
         };
+        let mut raw = raw.trim().to_string();
+        let mut engine_label = engine_label;
+        // Hinglish is typed in Roman letters, as in WhatsApp.
+        if hinglish_mode && llm::has_devanagari(&raw) {
+            match self.to_roman_hinglish(&raw) {
+                Ok(roman) => {
+                    raw = roman;
+                    engine_label.push_str(" + Roman Hinglish (AI)");
+                }
+                Err(why) => {
+                    // Offline fallback: recognise again with a Roman Hinglish example.
+                    self.ensure_engine()?;
+                    let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+                    let options = Options {
+                        language: Some("hi".into()),
+                        initial_prompt: Some(ROMAN_HINGLISH_EXAMPLE.into()),
+                        ..Default::default()
+                    };
+                    let again = loaded.engine.transcribe(&samples, &options)?;
+                    if !again.text.trim().is_empty() {
+                        raw = again.text.trim().to_string();
+                    }
+                    engine_label.push_str(&format!(
+                        " + Roman Hinglish (offline; AI unavailable: {why})"
+                    ));
+                }
+            }
+        }
         let transcribe_ms = started.elapsed().as_millis() as u64;
-        let raw = raw.trim().to_string();
 
         let id = uuid::Uuid::new_v4().to_string();
         let process_name = target
@@ -661,7 +765,11 @@ impl Controller {
             &dictionary,
             &snippets,
             category,
-            &language,
+            if hinglish_route || llm::has_devanagari(&raw) {
+                "hi-en"
+            } else {
+                &language
+            },
             hwnd,
         );
         let clean_ms = clean_started.elapsed().as_millis();
