@@ -78,6 +78,21 @@ fn main() {
         };
         let t = engine.transcribe(&samples, &options).expect("transcribe");
         total_ms += t.elapsed_ms;
+        if args.iter().any(|a| a == "--show-dropped") {
+            for s in &t.segments {
+                eprintln!(
+                    "  {} {:>6}-{:>6} ms no-speech {:.2} {}",
+                    f.file_stem().unwrap().to_string_lossy(),
+                    s.start_ms,
+                    s.end_ms,
+                    s.no_speech_prob,
+                    s.text
+                );
+            }
+            for d in &t.dropped {
+                eprintln!("  DROPPED: {d}");
+            }
+        }
         println!(
             "{}\t{}",
             f.file_stem().unwrap().to_string_lossy(),

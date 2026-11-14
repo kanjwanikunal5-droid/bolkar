@@ -56,7 +56,7 @@ function DictationRow({ d, onChanged, startFixing = false }: { d: Dictation; onC
     <div className="dictation">
       <div className="row spread">
         <span className="dim">
-          {when(d.created_at)} Â· {d.app_process || "no app"} Â· {d.word_count} words
+          {when(d.created_at)} · {d.app_process || "no app"} · {d.word_count} words
         </span>
         <span className="row">
           <span className={`tag ${d.inserted ? "ok" : ""}`}>{d.inserted ? "inserted" : d.insert_method || "not inserted"}</span>
@@ -165,7 +165,7 @@ function ModelList({ selected, onSelect }: { selected: string; onSelect: (id: st
               </span>
             </div>
             <div className="dim">
-              {m.size_mb} MB on disk Â· needs about {m.ram_mb} MB of memory{m.note ? ` Â· ${m.note}` : ""}
+              {m.size_mb} MB on disk · needs about {m.ram_mb} MB of memory{m.note ? ` · ${m.note}` : ""}
             </div>
           </div>
         );
@@ -419,7 +419,7 @@ export function App() {
             </div>
             <p className="dim">
               {APP_NAME} {status?.version}
-              {status?.running_as_admin ? " Â· running as administrator" : ""}
+              {status?.running_as_admin ? " · running as administrator" : ""}
             </p>
           </>
         )}

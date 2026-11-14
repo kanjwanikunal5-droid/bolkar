@@ -21,8 +21,18 @@ pub struct ModelInfo {
 
 const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
-/// Checksums recorded from the files downloaded on 12 November 2026.
+/// Checksums recorded from the files downloaded on 12 November 2026 (large-v3: 14 November
+/// 2026, matches the SHA-256 published on Hugging Face).
 pub const CATALOGUE: &[ModelInfo] = &[
+    ModelInfo {
+        id: "large-v3",
+        label: "Large v3 (best for Hinglish, with AI clean-up on)",
+        file: "ggml-large-v3-q5_0.bin",
+        size_mb: 1031,
+        ram_mb: 2600,
+        sha256: "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+        note: "About 3 times slower than Turbo (about 1 s per dictation on this laptop's graphics card). Writes Hinglish in Hindi letters; AI clean-up turns it into Roman letters, so turn AI clean-up on.",
+    },
     ModelInfo {
         id: "large-v3-turbo",
         label: "Large v3 Turbo (best accuracy)",

@@ -351,6 +351,35 @@ in `metrics::HINGLISH_VARIANTS`, different words are never merged).
   context awareness beyond the existing per-app style.
 - Checks: `cargo fmt --check` and `cargo clippy --workspace -D warnings` clean;
   `cargo test --workspace` **135 passed, 0 failed, 1 ignored**; web and desktop UIs build.
+## 14 November 2026 (evening): full Whisper large-v3 tested; speech-dropping bug fixed
+
+The owner approved downloading `ggml-large-v3-q5_0.bin` (1,081,140,203 bytes; SHA-256
+d75795ec...8ad1, matches Hugging Face). Same tests as for Turbo:
+
+| Set | Turbo | Large v3 |
+|---|---|---|
+| English 30 clips (app routing) | 0.93% | **0.62%** |
+| Hinglish 60 clips, offline only | 41.4% (Roman) | 85% - writes Hindi letters in 47 of 60, ignores the Roman example |
+| Hinglish Heera 30, + AI script conversion + rules + AI spelling | 23.2% (turbo + AI spelling) | **12.1%** (tolerant **9.4%**), best of every route, audio stays on the laptop |
+| Speed, 60 Hinglish clips (RTX 4050) | 17.7 s | 59.6 s (about 1 s per clip) |
+
+On the owner's 5 voice notes, Large v3 + AI conversion + spelling gave the most complete and
+correct text so far (e.g. "Main area mein nahi aa paunga", "almost do teen hafte baad hi mil
+paunga", "Matheran"); remaining slips: "jaisi tabhi" (just abhi), "raay karunga" (try
+karunga), "Nikkil", "Sunna" (sun na). No reference text yet, so no score on his voice.
+
+**Bug found and fixed (affects every model):** the English/Hinglish language check ran on the
+same Whisper state as the transcription. That left a wrong "no speech" score (0.87 instead
+of 0.00) on the first 30-second window, and the hallucination guard then deleted real
+speech: Large v3 lost the first 28 s of two voice notes. Language detection now has its own
+state (`WhisperEngine::detect_state`). After the fix: nothing dropped on the owner's notes or
+the 90 clips; Turbo scores unchanged (it had not been hit on these clips). Real-app checks
+after the fix: Word Command Mode 3 of 3, Notepad dictation test PASS (all 4 checks).
+
+App: "Large v3 (best for Hinglish, with AI clean-up on)" added to the model list (download
+and checksum handled by the app). Turbo stays the default (faster; Roman Hinglish offline).
+Also fixed: the model list showed "Â·" instead of "·" (wrongly encoded characters).
+Checks: fmt, clippy clean; `cargo test --workspace` 135 passed, 0 failed.
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

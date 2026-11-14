@@ -149,6 +149,10 @@ pub struct WhisperEngine {
     ctx: WhisperContext,
     pub gpu: bool,
     state: RefCell<WhisperState>,
+    /// Separate state for language detection. Detecting on the transcription state left a
+    /// stale "no speech" score on the first 30 s window, and the guard then dropped real
+    /// speech (measured 14 Nov 2026: large-v3 lost the first 28 s of two voice notes).
+    detect_state: RefCell<WhisperState>,
 }
 
 impl WhisperEngine {
@@ -173,10 +177,14 @@ impl WhisperEngine {
         let state = ctx
             .create_state()
             .map_err(|e| format!("could not start recogniser: {e}"))?;
+        let detect_state = ctx
+            .create_state()
+            .map_err(|e| format!("could not start recogniser: {e}"))?;
         Ok(Self {
             ctx,
             gpu,
             state: RefCell::new(state),
+            detect_state: RefCell::new(detect_state),
         })
     }
 
@@ -213,7 +221,7 @@ impl WhisperEngine {
         } else {
             samples
         };
-        let mut state = self.state.borrow_mut();
+        let mut state = self.detect_state.borrow_mut();
         state
             .pcm_to_mel(samples, threads)
             .map_err(|e| format!("language detection failed: {e}"))?;

@@ -59,6 +59,10 @@ less reliable there.
 word; the offline route gets the meaning right but misspells more words (baut, karun ga).
 With AI clean-up on, Hinglish spellings are also tidied (bahut, karunga, vishwas).
 
+**Best Hinglish without sending your voice anywhere:** in Settings choose the speech model
+**Large v3** and turn on AI clean-up (only the text goes to Groq). It is about 3 times slower
+than Turbo (about 1 second per dictation) and needs AI clean-up to write Roman letters.
+
 ## Edit text by voice (Command Mode)
 
 1. Select some text in any app (Word, Gmail, Notepad...).
