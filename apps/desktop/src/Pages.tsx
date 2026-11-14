@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText, type AiStatus, type Snippet, type Suggestion, type Term, type UploadEvent } from "./api";
+import { PageHead } from "./ui";
 
 function useLoad<T>(load: () => Promise<T>, initial: T) {
   const [value, setValue] = useState<T>(initial);
@@ -40,12 +41,11 @@ export function DictionaryPage() {
   const shown = terms.filter((t) => t.term.toLowerCase().includes(filter.toLowerCase()));
 
   return (
-    <>
-      <h2>Dictionary</h2>
-      <p className="dim">
-        Words written exactly the way you want them. They also help the speech recogniser hear them. A word is only
-        replaced when it matches as a whole word; nothing is changed because it merely sounds similar.
-      </p>
+    <div className="page">
+      <PageHead
+        title="Dictionary"
+        sub="Names and terms written exactly your way. They also help the recogniser hear them. Only whole words are replaced, never sound-alikes."
+      />
       <Banner text={error} />
       <div className="card">
         <h3>Add a word</h3>
@@ -82,7 +82,7 @@ export function DictionaryPage() {
           </div>
         ))}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -102,9 +102,8 @@ export function SnippetsPage() {
       (e) => setError(errorText(e)),
     );
   return (
-    <>
-      <h2>Snippets</h2>
-      <p className="dim">Say a short phrase and it is replaced by a saved block of text, exactly as saved.</p>
+    <div className="page">
+      <PageHead title="Snippets" sub="Say a short phrase and get a saved block of text: your address, a signature, a standard reply." />
       <Banner text={error} />
       <div className="card">
         <h3>Add a snippet</h3>
@@ -134,7 +133,7 @@ export function SnippetsPage() {
           </div>
         ))}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -244,9 +243,9 @@ export function AiSettings() {
 
   return (
     <div className="card">
-      <h3>AI clean-up (optional)</h3>
+      <h3>Another AI service</h3>
       <p className="dim">
-        Off by default. When on, the text of each dictation (never the audio) is sent to the service you choose, to fix
+        For Gemini, a local Ollama or any compatible server instead of Groq. When on, the text of each dictation (never the audio) is sent to the service you choose, to fix
         grammar and self-corrections the built-in rules cannot. Every answer is checked: if it adds a number, name, e-mail
         or link you did not say, or takes longer than 2.5 seconds, the built-in rules are used instead.
       </p>
@@ -337,53 +336,6 @@ export function AiSettings() {
         )}
       </div>
       {message && <p className={message.ok ? "ok" : "bad"}>{message.text}</p>}
-      {status.cloud_asr_possible && <CloudAsr on={status.cloud_asr} note={status.cloud_asr_note} onChange={refresh} />}
-    </div>
-  );
-}
-
-/** Optional cloud speech recognition: much faster, but sends audio. Separate consent. */
-function CloudAsr({ on, note, onChange }: { on: boolean; note: string; onChange: () => void }) {
-  const [agree, setAgree] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const save = (next: boolean) =>
-    api.setCloudAsr(next, agree).then(
-      () => {
-        setError(null);
-        setAgree(false);
-        onChange();
-      },
-      (e) => setError(errorText(e)),
-    );
-  return (
-    <div className="raw" style={{ marginTop: "1rem" }}>
-      <h3>Faster speech recognition with Groq (optional)</h3>
-      <p>
-        Status: <strong className={on ? "ok" : ""}>{on ? "On - audio is recognised by Groq" : "Off - recognised on this computer"}</strong>
-      </p>
-      <p className="dim">
-        Useful on computers without a dedicated graphics card. On this laptop the RTX 4050 already recognises a short
-        dictation in about 0.3 seconds without sending anything, so this is not needed here. Groq answered in about 0.3
-        seconds in tests. If Groq is slow or unavailable, this computer is used automatically.
-      </p>
-      {!on && (
-        <>
-          <p>{note}</p>
-          <label className="row">
-            <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />I agree to send the audio of my
-            dictations to Groq.
-          </label>
-          <button className="btn primary" disabled={!agree} onClick={() => void save(true)}>
-            Turn on
-          </button>
-        </>
-      )}
-      {on && (
-        <button className="btn" onClick={() => void save(false)}>
-          Turn off (recognise on this computer)
-        </button>
-      )}
-      <Banner text={error} />
     </div>
   );
 }

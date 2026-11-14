@@ -1,4 +1,4 @@
-﻿// The user's API key, encrypted with a passphrase (PBKDF2 + AES-GCM) and kept only in this
+// The user's API key, encrypted with a passphrase (PBKDF2 + AES-GCM) and kept only in this
 // browser's IndexedDB. Nothing is ever sent anywhere except to the provider itself.
 
 const DB = "bolkar";
@@ -56,6 +56,34 @@ export async function saveKey(apiKey: string, passphrase: string) {
   await put("groq", { salt, iv, data } satisfies Sealed);
 }
 
+/**
+ * "Remember on this device": the API key is encrypted with an AES key that the browser
+ * creates as non-extractable and keeps in IndexedDB. No passphrase to type, and the raw
+ * key is never stored in readable form. (A passphrase remains available for shared devices.)
+ */
+export async function saveKeyOnDevice(apiKey: string) {
+  const deviceKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, deviceKey, new TextEncoder().encode(apiKey));
+  await put("devicekey", deviceKey);
+  await put("groq", { salt: new Uint8Array(0), iv, data, device: true });
+}
+
+/** "device" (opens without a passphrase), "passphrase", or null when no key is saved. */
+export async function keyKind(): Promise<"device" | "passphrase" | null> {
+  const sealed = await get<Sealed & { device?: boolean }>("groq");
+  if (!sealed) return null;
+  return sealed.device ? "device" : "passphrase";
+}
+
+export async function unlockOnDevice(): Promise<string> {
+  const sealed = await get<Sealed>("groq");
+  const deviceKey = await get<CryptoKey>("devicekey");
+  if (!sealed || !deviceKey) throw new Error("No key saved yet.");
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: sealed.iv as BufferSource }, deviceKey, sealed.data);
+  return new TextDecoder().decode(plain);
+}
+
 export async function hasKey() {
   return (await get<Sealed>("groq")) !== undefined;
 }
@@ -74,6 +102,7 @@ export async function unlockKey(passphrase: string): Promise<string> {
 
 export async function forgetKey() {
   await put("groq", undefined);
+  await put("devicekey", undefined);
 }
 
 export interface HistoryItem {

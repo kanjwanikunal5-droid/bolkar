@@ -1,11 +1,34 @@
 {
-  "version": "0.0.1",
-  "configurations": [
-    {
-      "name": "web-preview",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "apps/web", "exec", "vite", "preview", "--port", "4173", "--strictPort"],
-      "port": 4173
-    }
-  ]
+    "version":  "0.0.1",
+    "configurations":  [
+                           {
+                               "name":  "web-preview",
+                               "runtimeExecutable":  "pnpm",
+                               "runtimeArgs":  [
+                                                   "--dir",
+                                                   "apps/web",
+                                                   "exec",
+                                                   "vite",
+                                                   "preview",
+                                                   "--port",
+                                                   "4173",
+                                                   "--strictPort"
+                                               ],
+                               "port":  4173
+                           },
+                           {
+                               "name":  "desktop-ui",
+                               "runtimeExecutable":  "pnpm",
+                               "runtimeArgs":  [
+                                                   "--dir",
+                                                   "apps/desktop",
+                                                   "exec",
+                                                   "vite",
+                                                   "--port",
+                                                   "1420",
+                                                   "--strictPort"
+                                               ],
+                               "port":  1420
+                           }
+                       ]
 }

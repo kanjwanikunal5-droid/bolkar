@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, meetings, type MeetingLive, type MeetingResult } from "./api";
+import { Icon } from "./icons";
+import { PageHead, SettingRow, Switch } from "./ui";
 
 function clock(s: number) {
   const h = Math.floor(s / 3600);
@@ -103,7 +105,10 @@ export function MeetingsPage() {
 
   return (
     <>
-      <h2>Meeting notes</h2>
+      <PageHead
+        title="Meeting notes"
+        sub="Records your microphone and the call audio, transcribes on this computer, and writes a summary with decisions and action items."
+      />
       {error && (
         <div className="banner" role="alert">
           {error}
@@ -112,34 +117,33 @@ export function MeetingsPage() {
 
       {!recording && !busy && (
         <div className="card">
-          <div className="field">
-            <label htmlFor="mtitle">Title</label>
-            <input id="mtitle" type="text" value={title} placeholder="e.g. Weekly finance review" onChange={(e) => setTitle(e.target.value)} />
+          <SettingRow title="Title" help="Shown at the top of the notes.">
+            <input id="mtitle" type="text" aria-label="Meeting title" value={title} placeholder="e.g. Weekly finance review" onChange={(e) => setTitle(e.target.value)} />
+          </SettingRow>
+          <SettingRow title="My microphone" help="Your voice, labelled “Me”.">
+            <Switch label="Record my microphone" checked={mic} onChange={setMic} />
+          </SettingRow>
+          <SettingRow title="Computer sound" help="Zoom, Google Meet, Teams: the other side, labelled “Others”. Use headphones if you can.">
+            <Switch label="Record computer sound" checked={system} onChange={setSystem} />
+          </SettingRow>
+          <SettingRow title="Permission" help="I have told the participants and I am allowed to record this meeting.">
+            <Switch label="I am allowed to record this meeting" checked={consent} onChange={setConsent} />
+          </SettingRow>
+          <div className="row" style={{ marginTop: "0.6rem" }}>
+            <button className="btn primary" disabled={!consent || (!mic && !system)} onClick={start}>
+              <Icon.Mic size={16} /> Start recording
+            </button>
+            {!consent && <span className="dim">Turn on Permission to start.</span>}
           </div>
-          <label className="row">
-            <input type="checkbox" checked={mic} onChange={(e) => setMic(e.target.checked)} />
-            My microphone (labelled "Me")
-          </label>
-          <label className="row">
-            <input type="checkbox" checked={system} onChange={(e) => setSystem(e.target.checked)} />
-            Computer sound - Zoom, Google Meet, Teams (labelled "Others")
-          </label>
-          <p className="dim">Use headphones if you can: with speakers, your microphone also picks up the other side.</p>
-          <label className="row">
-            <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />I have told the participants and
-            I am allowed to record this meeting.
-          </label>
-          <button className="btn primary" disabled={!consent || (!mic && !system)} onClick={start}>
-            Start recording
-          </button>
         </div>
       )}
 
       {recording && (
         <div className="card">
           <div className="row spread">
-            <strong className="bad" role="status">
-              {"●"} Recording {clock(live?.seconds ?? 0)}
+            <strong className="bad row" role="status" style={{ gap: "0.5rem" }}>
+              <span className="dot pulse" style={{ background: "var(--danger)" }} />
+              Recording {clock(live?.seconds ?? 0)}
             </strong>
             <button className="btn primary" onClick={stop}>
               Stop and make notes

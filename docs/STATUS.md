@@ -439,6 +439,59 @@ Checks: fmt, clippy clean; `cargo test --workspace` 135 passed, 0 failed.
 - Checks: fmt and clippy clean; `cargo test --workspace` **137 passed, 0 failed, 2 ignored**
   (the ignored ones are the live GitHub check and a machine-specific test); web and desktop
   UIs build. GitHub CI: see the run for this commit.
+## 14 November 2026 (late): version 0.2.0 - redesigned app (owner's request)
+
+The owner found the app generic and not interactive, and having to "save" settings and the
+key repeatedly annoying. Rebuilt the interface (desktop and phone web app) with an original
+design system (deep teal + amber, own icons; nothing taken from the reference screenshots,
+which show another product).
+
+**Desktop**
+- New shell: sidebar with icons and groups, live status chip (ready / setup needed, Groq or
+  local, AI clean-up), Light / Follow Windows / Dark switch (saved, applied before first paint).
+- **Home**: greeting (optional name), real stat chips (streak, words this week, speaking
+  speed), recent dictations by day with copy, live microphone meter + practice box, a setup
+  checklist computed from real state, and a "Your setup" card. "How to dictate" moved to its
+  own **How to use** page (keycaps, examples, Command Mode phrases).
+- **Insights** (new): speaking speed with a gauge against typing at 40 wpm, words dictated,
+  time saved (estimate, assumption stated on the card), 17-week activity calendar with current
+  and best streak, where you dictate (by app), fixes, learned words, voice edits. Computed only
+  from the local history (`insights.rs`, 4 unit tests incl. "empty history shows zeros, never
+  made-up numbers"). New database column `fixed` (migration v3) to count corrections.
+- **History**: search, filter (all / typed / commands), grouped by day, copy / fix / original /
+  delete.
+- **Settings**: six sections; every control applies instantly with a short confirmation, no
+  Save buttons. **Groq** is one step: paste the key once, the app checks it with Groq and keeps
+  it in Windows Credential Manager ("Connected - key ending ****abcd", never asked again); switches
+  for Groq speech recognition and AI clean-up. Other AI services kept under "advanced".
+- **Owner's defaults**: when a Groq key exists, AI clean-up and Groq speech recognition are on
+  (applied once at start-up, logged; both switchable). The best installed speech model is
+  selected automatically (Large v3 when AI clean-up is on, else Turbo); a model picked by hand is
+  respected. Not applied in test runs with their own data folder.
+- Meeting notes, Dictionary, Snippets, Scratchpad restyled; language choice limited to English +
+  Hinglish / English / Hinglish (owner's decision). Default window 1280 x 860.
+
+**Phone web app**: same look, big animated microphone with live waveform, recording timer,
+result auto-copied, **Share** (straight to WhatsApp), stats, searchable history, light/dark.
+The key is remembered on the device with a browser-held non-extractable key: no passphrase on
+every visit (a passphrase stays available for shared devices).
+
+**Checks run**
+- `cargo fmt`, `cargo clippy --workspace -D warnings` clean; `cargo test --workspace`
+  **141 passed, 0 failed**; desktop and web type-check and build.
+- Every desktop page looked at in both themes in the browser pane, using development-only
+  sample data (`dev-preview.ts`, never in the installed app). Fixed from that review: language
+  buttons wrapping, unlabelled gauge marker, cramped shortcut rows, sidebar too tall.
+- Real app (release build, throwaway data folder, 4 real dictations): Home showed real values
+  (1-day streak, 43 words, 144 wpm) - window captured without focusing it.
+- Web app at phone width (375 px): setup screen, main screen, light and dark, opens without a
+  passphrase after reload, no sideways scrolling. A fake placeholder key was used and removed.
+- Found and fixed while testing: the owner's Groq key lives in Windows Credential Manager, so
+  the new default also switched Groq on inside a throwaway test folder; the 4 test dictations
+  above (synthetic English sentences, no personal data) were therefore sent to Groq with the
+  owner's key (about 8 small requests). Test runs now never apply the Groq default.
+- NOT run: clicking through the new Settings in the installed app (the owner was using the
+  laptop), the Android keyboard (no visual changes this round), Command Mode re-test.
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

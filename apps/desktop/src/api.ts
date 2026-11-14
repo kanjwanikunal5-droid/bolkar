@@ -12,6 +12,7 @@ const READ_ONLY = new Set([
   "last_dictation_id",
   "mic_status",
   "meeting_status",
+  "get_insights",
 ]);
 
 /**
@@ -122,6 +123,27 @@ export interface AiStatus {
   cloud_asr: boolean;
   cloud_asr_possible: boolean;
   cloud_asr_note: string;
+  groq_key_hint: string | null;
+}
+
+export interface Insights {
+  total_words: number;
+  total_dictations: number;
+  commands: number;
+  words_today: number;
+  words_this_week: number;
+  speaking_wpm: number | null;
+  minutes_saved: number;
+  typing_wpm: number;
+  current_streak: number;
+  longest_streak: number;
+  active_days: number;
+  days: { date: string; words: number; dictations: number }[];
+  apps: { name: string; words: number; share: number }[];
+  fixes: number;
+  learned_words: number;
+  your_words: number;
+  first_day: string | null;
 }
 
 export interface Term {
@@ -162,6 +184,9 @@ export const api = {
   downloadModel: (id: string) => invoke<void>("download_model", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
   ai: () => invoke<AiStatus>("get_ai"),
+  insights: () => invoke<Insights>("get_insights"),
+  connectGroq: (key: string) => invoke<string>("connect_groq", { key }),
+  setAiEnabled: (on: boolean) => invoke<void>("set_ai_enabled", { on }),
   setAi: (provider: string, model: string, baseUrl: string, key: string | null, consent: boolean) =>
     invoke<void>("set_ai", { provider, model, baseUrl, key, consent }),
   forgetAiKey: (provider: string) => invoke<void>("forget_ai_key", { provider }),

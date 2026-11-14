@@ -165,6 +165,14 @@ replayed, then deleted; you can switch this off in Settings.
 **Settings -> Dictation -> Language** and **Settings -> Text size**. Accuracy in each language
 has not been measured yet, so no quality figures are shown.
 
+## Settings and Groq
+
+Settings save themselves the moment you change them; there is no Save button. To connect
+Groq: Settings > Groq & AI, paste your key once, press Connect. The key is checked and kept in
+Windows Credential Manager; you never type it again. Groq speech recognition and AI clean-up
+then switch on (best accuracy); either can be switched off there. The sidebar switch changes
+light / dark / follow Windows.
+
 ## Updates
 
 Settings > Updates shows your version. Press **Check for updates** to ask GitHub whether a newer

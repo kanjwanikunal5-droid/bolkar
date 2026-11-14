@@ -38,6 +38,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE dictionary_terms ADD COLUMN auto_replace INT NOT NULL DEFAULT 1;
     CREATE UNIQUE INDEX dictionary_terms_term ON dictionary_terms(term);
     "#,
+    // v3: remember which dictations the user corrected (for the Insights page).
+    r#"
+    ALTER TABLE dictations ADD COLUMN fixed INT NOT NULL DEFAULT 0;
+    "#,
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -362,7 +366,7 @@ pub fn save_meeting(
 pub fn update_final_text(conn: &Connection, id: &str, text: &str) -> Result<(), String> {
     let n = conn
         .execute(
-            "UPDATE dictations SET final_text = ?2, word_count = ?3 WHERE id = ?1",
+            "UPDATE dictations SET final_text = ?2, word_count = ?3, fixed = 1 WHERE id = ?1",
             params![id, text, text.split_whitespace().count() as i64],
         )
         .map_err(|e| e.to_string())?;
@@ -521,6 +525,52 @@ pub fn delete_dictation(conn: &Connection, id: &str) -> Result<Option<String>, S
     conn.execute("DELETE FROM dictations WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(audio)
+}
+
+/// One dictation, reduced to what the Insights page counts (no text).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRow {
+    pub created_at: String,
+    pub words: i64,
+    pub duration_ms: i64,
+    pub app_process: String,
+    pub level: String,
+    pub fixed: bool,
+}
+
+/// Every dictation that produced text, oldest first, for local statistics.
+pub fn usage_rows(conn: &Connection) -> Result<Vec<UsageRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT created_at, COALESCE(word_count, 0), COALESCE(duration_ms, 0),
+                    COALESCE(app_process, ''), COALESCE(level, ''), COALESCE(fixed, 0)
+             FROM dictations WHERE COALESCE(final_text, '') <> '' ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(UsageRow {
+                created_at: r.get(0)?,
+                words: r.get(1)?,
+                duration_ms: r.get(2)?,
+                app_process: r.get(3)?,
+                level: r.get(4)?,
+                fixed: r.get::<_, i64>(5)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// Number of dictionary entries from one source ("manual", "learned" or "pack").
+pub fn count_terms(conn: &Connection, source: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM dictionary_terms WHERE source = ?1",
+        [source],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
 }
 
 /// Words dictated since `since` (an ISO timestamp). A local statistic only.

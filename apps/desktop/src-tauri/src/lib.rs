@@ -6,6 +6,7 @@ pub mod credentials;
 mod db;
 mod hotkey;
 mod insert;
+mod insights;
 mod meeting;
 mod models;
 mod overlay;
@@ -299,6 +300,10 @@ const SETTINGS: &[(&str, &str)] = &[
     ("scratchpad", ""),
     // Ask GitHub for a newer version at start-up. Off by default (local first).
     ("check_updates", "off"),
+    // Appearance: "system", "light" or "dark".
+    ("theme", "system"),
+    // Shown in the greeting on Home; empty = no name.
+    ("user_name", ""),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -388,6 +393,188 @@ pub fn heal_ai_model(state: &AppState, cfg: &providers::Config) -> Option<String
     Some(pick)
 }
 
+/// Speech models from best to least accurate (measured, see docs/STATUS.md). Large v3 needs
+/// AI clean-up for Roman Hinglish, so it only ranks first when AI clean-up is on.
+fn model_rank(id: &str, ai_on: bool) -> u8 {
+    match id {
+        "large-v3" if ai_on => 0,
+        "large-v3-turbo" => 1,
+        "large-v3" => 2,
+        "small" => 3,
+        "base" => 4,
+        _ => 9,
+    }
+}
+
+/// Selects the best installed speech model when the selected one is missing, or when a
+/// better one is installed and the user never picked a model by hand.
+fn auto_pick_model(state: &AppState) {
+    let ai_on = ai_config(state).is_some();
+    let dir = state.models_dir();
+    let best = models::CATALOGUE
+        .iter()
+        .filter(|m| models::is_installed(&dir, m))
+        .min_by_key(|m| model_rank(m.id, ai_on));
+    let Some(best) = best else { return };
+    let Ok(conn) = state.db.lock() else { return };
+    let current =
+        db::get_setting(&conn, "model").unwrap_or_else(|| default_setting("model").into());
+    let current_installed = models::find(&current).is_some_and(|m| models::is_installed(&dir, m));
+    let chosen_by_hand = db::get_setting(&conn, "model_chosen").as_deref() == Some("1");
+    let better = model_rank(best.id, ai_on) < model_rank(&current, ai_on);
+    if !current_installed || (better && !chosen_by_hand) {
+        let _ = db::set_setting(&conn, "model", best.id);
+    }
+}
+
+/// The owner's chosen defaults (14 Nov 2026): when a Groq key is saved, AI clean-up and Groq
+/// speech recognition are on, for the best measured accuracy. Applied once; both stay
+/// switchable in Settings, and every upload is listed under "Data that left this computer".
+fn apply_recommended_defaults(state: &AppState) {
+    // Never in test runs (their own data folder): the Groq key in Credential Manager is the
+    // owner's, and tests must not send audio or text with it.
+    if std::env::var_os("APP_DATA_DIR").is_some() || std::env::var_os("APP_SELFTEST_WAV").is_some()
+    {
+        return;
+    }
+    let Ok(conn) = state.db.lock() else { return };
+    if db::get_setting(&conn, "recommended_defaults").as_deref() == Some("v1") {
+        return;
+    }
+    if credentials::load("groq").is_some() {
+        let _ = enable_groq(&conn);
+        db::log_event(
+            &conn,
+            "info",
+            "recommended setup: AI clean-up and Groq speech recognition turned on (Groq key present)",
+        );
+    }
+    let _ = db::set_setting(&conn, "recommended_defaults", "v1");
+}
+
+/// Turns on Groq for both AI clean-up (text) and speech recognition (audio), recording the
+/// consent shown next to the controls that call this.
+fn enable_groq(conn: &Connection) -> Result<(), String> {
+    let preset = providers::preset("groq").ok_or("unknown provider")?;
+    if db::get_setting(conn, AI_PROVIDER).as_deref() != Some("groq") {
+        db::set_setting(conn, AI_PROVIDER, "groq")?;
+        db::set_setting(conn, AI_MODEL, preset.model)?;
+        db::set_setting(conn, AI_BASE_URL, "")?;
+    }
+    db::record_consent(
+        conn,
+        "groq",
+        preset.base_url,
+        preset.model,
+        preset.data_note,
+    )?;
+    db::record_consent(
+        conn,
+        CLOUD_ASR_CONSENT,
+        "https://api.groq.com/openai/v1",
+        CLOUD_ASR_MODEL,
+        CLOUD_ASR_NOTE,
+    )?;
+    db::set_setting(conn, CLOUD_ASR, "on")
+}
+
+/// One step: checks the Groq key with Groq, saves it in Windows Credential Manager, and turns
+/// on AI clean-up and Groq speech recognition (the screen says so before the button).
+#[tauri::command]
+async fn connect_groq(state: State<'_, AppState>, key: String) -> Result<String, String> {
+    let key = key.trim().to_string();
+    if key.len() < 20 || key.contains(char::is_whitespace) {
+        return Err(
+            "That does not look like a Groq key. Copy it again from console.groq.com/keys.".into(),
+        );
+    }
+    let preset = providers::preset("groq").ok_or("unknown provider")?;
+    let cfg = providers::Config {
+        provider: "groq".into(),
+        base_url: preset.base_url.to_string(),
+        model: preset.model.to_string(),
+        key: Some(key.clone()),
+    };
+    let check = tauri::async_runtime::spawn_blocking(move || {
+        providers::list_models(&cfg, std::time::Duration::from_secs(8))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let note = match check {
+        Ok(_) => "Connected. Groq accepted the key.".to_string(),
+        Err(providers::CallError::BadKey) => {
+            return Err("Groq did not accept this key. Check it at console.groq.com/keys.".into())
+        }
+        Err(e) => format!(
+            "Saved. Groq could not be reached to check the key ({e}); it will be used when it can."
+        ),
+    };
+    credentials::save("groq", &key)?;
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        enable_groq(&conn)?;
+        db::log_event(
+            &conn,
+            "info",
+            "Groq connected: AI clean-up and Groq speech recognition on",
+        );
+    }
+    auto_pick_model(&state);
+    let _ = state.ctl.lock().map(|tx| tx.send(Msg::SettingsChanged));
+    Ok(note)
+}
+
+/// AI clean-up on or off without touching the saved key.
+#[tauri::command]
+fn set_ai_enabled(state: State<AppState>, on: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if !on {
+        if let Some(old) = db::get_setting(&conn, AI_PROVIDER) {
+            db::revoke_consent(&conn, &old)?;
+        }
+        return db::set_setting(&conn, AI_PROVIDER, "none");
+    }
+    let provider = db::get_setting(&conn, AI_PROVIDER)
+        .filter(|p| p != "none")
+        .unwrap_or_else(|| "groq".into());
+    let preset = providers::preset(&provider).ok_or("unknown provider")?;
+    if preset.needs_key && credentials::load(&provider).is_none() {
+        return Err("Connect Groq first: paste your key above.".into());
+    }
+    db::set_setting(&conn, AI_PROVIDER, &provider)?;
+    if db::get_setting(&conn, AI_MODEL)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        db::set_setting(&conn, AI_MODEL, preset.model)?;
+    }
+    db::record_consent(
+        &conn,
+        &provider,
+        preset.base_url,
+        preset.model,
+        preset.data_note,
+    )
+}
+
+#[tauri::command]
+fn get_insights(state: State<AppState>) -> Result<insights::Insights, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let rows = db::usage_rows(&conn)?;
+    let to_local = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Local).date_naive())
+    };
+    Ok(insights::compute(
+        &rows,
+        chrono::Local::now().date_naive(),
+        &to_local,
+        db::count_terms(&conn, "learned"),
+        db::count_terms(&conn, "manual"),
+    ))
+}
+
 /// Turns cloud speech recognition on or off. Turning it on needs the separate consent.
 #[tauri::command]
 fn set_cloud_asr(state: State<AppState>, on: bool, consent: bool) -> Result<(), String> {
@@ -434,6 +621,8 @@ struct AiStatus {
     /// A Groq key exists, so cloud speech recognition can be offered.
     cloud_asr_possible: bool,
     cloud_asr_note: &'static str,
+    /// Last four characters of the saved Groq key, so the user can see which key is saved.
+    groq_key_hint: Option<String>,
 }
 
 #[tauri::command]
@@ -456,6 +645,17 @@ fn get_ai(state: State<AppState>) -> AiStatus {
         cloud_asr: asr_config(&state).is_some(),
         cloud_asr_possible: credentials::load("groq").is_some(),
         cloud_asr_note: CLOUD_ASR_NOTE,
+        groq_key_hint: credentials::load("groq").map(|k| {
+            let tail: String = k
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            tail
+        }),
         provider,
         model,
         base_url,
@@ -835,11 +1035,13 @@ fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(),
     if !SETTINGS.iter().any(|(k, _)| *k == key) {
         return Err(format!("unknown setting '{key}'"));
     }
-    state
-        .db
-        .lock()
-        .map_err(|e| e.to_string())
-        .and_then(|c| db::set_setting(&c, &key, &value))?;
+    state.db.lock().map_err(|e| e.to_string()).and_then(|c| {
+        if key == "model" {
+            // Picked by hand: no automatic switching to another model afterwards.
+            db::set_setting(&c, "model_chosen", "1")?;
+        }
+        db::set_setting(&c, &key, &value)
+    })?;
     let _ = state.ctl.lock().map(|tx| tx.send(Msg::SettingsChanged));
     Ok(())
 }
@@ -915,6 +1117,20 @@ fn download_model(app: AppHandle, state: State<AppState>, id: String) -> Result<
             }
         };
         let result = models::download(&dir, &model, &report);
+        if result.is_ok() {
+            // A newly downloaded model is selected when it is better than the current one.
+            let state = app.state::<AppState>();
+            let ai_on = ai_config(&state).is_some();
+            if let Ok(conn) = state.db.lock() {
+                let current = db::get_setting(&conn, "model").unwrap_or_default();
+                let current_ok =
+                    models::find(&current).is_some_and(|m| models::is_installed(&dir, m));
+                if !current_ok || model_rank(model.id, ai_on) < model_rank(&current, ai_on) {
+                    let _ = db::set_setting(&conn, "model", model.id);
+                }
+            }
+            let _ = state.ctl.lock().map(|tx| tx.send(Msg::SettingsChanged));
+        }
         let _ = app.emit(
             "model-progress",
             ModelProgress {
@@ -1117,6 +1333,9 @@ pub fn run() {
             get_status,
             get_settings,
             set_setting,
+            get_insights,
+            connect_groq,
+            set_ai_enabled,
             check_update,
             open_release_page,
             list_dictations,
@@ -1184,6 +1403,12 @@ pub fn run() {
                 recorder: recorder.clone(),
                 meeting: Mutex::new(None),
             });
+            {
+                // Before the speech engine starts: owner's recommended defaults, best model.
+                let state = handle.state::<AppState>();
+                apply_recommended_defaults(&state);
+                auto_pick_model(&state);
+            }
             overlay::prepare(&handle);
             controller::spawn(handle.clone(), ctl_rx, recorder);
 

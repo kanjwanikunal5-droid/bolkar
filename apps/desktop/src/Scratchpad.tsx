@@ -1,5 +1,6 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { PageHead } from "./ui";
 
 /** Notes you can dictate into (Alt + Shift + N). Saved on this computer as you type. */
 export function ScratchpadPage({ initial, focusSignal }: { initial: string; focusSignal: number }) {
@@ -25,7 +26,7 @@ export function ScratchpadPage({ initial, focusSignal }: { initial: string; focu
 
   return (
     <>
-      <h2>Scratchpad</h2>
+      <PageHead title="Scratchpad" />
       <p className="dim">
         Quick notes. Press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> from any app to come here, then hold{" "}
         <kbd>Ctrl</kbd> + <kbd>Win</kbd> and speak. Select text and press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>{" "}
