@@ -210,6 +210,19 @@ from a web page; key saved, wrong passphrase refused, right passphrase unlocks.
 NOT run: a real dictation (needs the owner's key in the browser), iPhone Safari, Android Chrome.
 Publishing: `.github/workflows/deploy-web.yml` builds and deploys to GitHub Pages once Pages is
 enabled for the repository.
+## 14 November 2026: "No speech model installed" - cause and fix
+
+The Claude desktop app is an MSIX package. Programs started from it (the builder's shell) have
+AppData redirected to `AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache`. The earlier
+installs and the model copy therefore went into that private copy; when the owner started
+Bolkar himself, it used the real AppData folder, which had no model.
+Fix (run outside the container through WMI): installer run for real (exit 0, real
+`AppData\Local\Bolkar\app-desktop.exe` and Start-menu shortcut), model copied to the real
+`AppData\Roaming\app.bolkar.voice\models` (574,041,195 bytes, verified), app restarted from the
+real path. Confirming a dictation in the real app was NOT possible: further outside-container
+processes were held (likely by the installed antivirus). AI clean-up consent must be given
+again in Settings for the real data folder (the Groq key itself is in Credential Manager).
+Future builders: install/copy for the owner only via a process outside the container.
 ## Measured accuracy per language
 
 **None yet.** No real recordings have been scored. No accuracy figure is shown anywhere in the app.
