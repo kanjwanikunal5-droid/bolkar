@@ -10,6 +10,7 @@ mod meeting;
 mod models;
 mod overlay;
 pub mod providers;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
@@ -296,6 +297,8 @@ const SETTINGS: &[(&str, &str)] = &[
     ("ui_scale", "125"),
     // Scratchpad notes (Alt+Shift+N), kept on this computer.
     ("scratchpad", ""),
+    // Ask GitHub for a newer version at start-up. Off by default (local first).
+    ("check_updates", "off"),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -781,6 +784,44 @@ fn get_status(state: State<AppState>) -> Status {
     }
 }
 
+/// Asks GitHub whether a newer version is published (user-initiated or opted in).
+#[tauri::command]
+async fn check_update() -> update::UpdateInfo {
+    tauri::async_runtime::spawn_blocking(|| {
+        update::check(app_core::brand::REPOSITORY, env!("CARGO_PKG_VERSION"))
+    })
+    .await
+    .unwrap_or_else(|e| update::UpdateInfo {
+        current: env!("CARGO_PKG_VERSION").into(),
+        latest: None,
+        newer: false,
+        url: None,
+        message: format!("Could not check: {e}"),
+    })
+}
+
+/// Opens this project's release page in the browser. Only github.com release pages of this
+/// repository are accepted.
+#[tauri::command]
+fn open_release_page(url: Option<String>) -> Result<(), String> {
+    let base = format!(
+        "https://github.com/{}/releases",
+        app_core::brand::REPOSITORY
+    );
+    let url = url.unwrap_or_else(|| format!("{base}/latest"));
+    if app_core::brand::REPOSITORY.is_empty()
+        || !(url == format!("{base}/latest") || url.starts_with(&format!("{base}/")))
+        || url.contains(['"', ' ', '&', '^', '|'])
+    {
+        return Err("not a release page of this project".into());
+    }
+    std::process::Command::new("explorer.exe")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> std::collections::BTreeMap<String, String> {
     SETTINGS
@@ -981,6 +1022,50 @@ fn self_test(app: &AppHandle) {
         }
         // The target is confirmed in front, so no extra delay is needed.
         let delay_ms = if insert { 0 } else { delay_ms };
+        // Long-run test: the same recording N times (never inserted), one JSON line per run.
+        let repeat: u32 = std::env::var("APP_SELFTEST_REPEAT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        if repeat > 1 && !insert && !command {
+            let mut lines = Vec::new();
+            for run in 1..=repeat {
+                let (reply, rx) = channel();
+                let started = std::time::Instant::now();
+                let sent = app
+                    .state::<AppState>()
+                    .ctl
+                    .lock()
+                    .map_err(|e| e.to_string())
+                    .and_then(|tx| {
+                        tx.send(Msg::File {
+                            path: PathBuf::from(&wav),
+                            insert: false,
+                            delay_ms: 0,
+                            command: false,
+                            reply,
+                        })
+                        .map_err(|e| e.to_string())
+                    });
+                let result = match sent {
+                    Ok(()) => rx.recv().map_err(|e| e.to_string()).and_then(|r| r),
+                    Err(e) => Err(e),
+                };
+                let line = match &result {
+                    Ok(r) => serde_json::json!({
+                        "run": run, "ok": true, "total_ms": started.elapsed().as_millis() as u64,
+                        "transcribe_ms": r.transcribe_ms, "text": r.final_text,
+                    }),
+                    Err(e) => serde_json::json!({ "run": run, "ok": false, "error": e }),
+                };
+                lines.push(line.to_string());
+                if let Some(path) = &out {
+                    let _ = std::fs::write(path, lines.join("\n"));
+                }
+            }
+            app.exit(0);
+            return;
+        }
         let (reply, rx) = channel();
         let sent = app
             .state::<AppState>()
@@ -1019,9 +1104,10 @@ fn self_test(app: &AppHandle) {
 
 pub fn run() {
     let mut builder = tauri::Builder::default();
-    // One copy at a time in normal use. A self-test run (separate data folder) must not hand
-    // over to, or disturb, the copy the owner is using.
-    if std::env::var_os("APP_SELFTEST_WAV").is_none() {
+    // One copy at a time in normal use. A test run with its own data folder (APP_DATA_DIR, or
+    // a self-test) must not hand over to, or disturb, the copy the owner is using.
+    if std::env::var_os("APP_SELFTEST_WAV").is_none() && std::env::var_os("APP_DATA_DIR").is_none()
+    {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app)
         }));
@@ -1031,6 +1117,8 @@ pub fn run() {
             get_status,
             get_settings,
             set_setting,
+            check_update,
+            open_release_page,
             list_dictations,
             delete_dictation,
             copy_text,
@@ -1115,6 +1203,20 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            // Opt-in update check at start-up; the UI shows a notice if a newer version exists.
+            let auto_check = handle.state::<AppState>().setting("check_updates") == "on"
+                && std::env::var_os("APP_SELFTEST_WAV").is_none();
+            if auto_check {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(20));
+                    let info =
+                        update::check(app_core::brand::REPOSITORY, env!("CARGO_PKG_VERSION"));
+                    if info.newer {
+                        let _ = h.emit("update-available", &info);
+                    }
+                });
+            }
             self_test(&handle);
             Ok(())
         })

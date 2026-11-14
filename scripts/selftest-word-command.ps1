@@ -30,6 +30,8 @@ public static class Fg {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+  [DllImport("user32.dll")] public static extern IntPtr GetClipboardOwner();
   static string TitleOf(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, 512); return sb.ToString(); }
   public static string Title() { return TitleOf(GetForegroundWindow()); }
   public static IntPtr Find(string part) {
@@ -89,10 +91,10 @@ $app = Start-Process -FilePath $Exe -PassThru
 # during the first 3 seconds only, and log every change of the window in front.
 $seen = @(); $sw = [Diagnostics.Stopwatch]::StartNew()
 while (-not $app.HasExited -and $sw.ElapsedMilliseconds -lt 60000) {
-  Start-Sleep -Milliseconds 50
-  $now = [Fg]::Title()
+  Start-Sleep -Milliseconds 20
+  $now = [Fg]::Title() + " | clip#" + [Fg]::GetClipboardSequenceNumber()
   if ($seen.Count -eq 0 -or $seen[-1].Title -ne $now) { $seen += [pscustomobject]@{ Ms = $sw.ElapsedMilliseconds; Title = $now } }
-  if ($now -ne $title -and $sw.ElapsedMilliseconds -lt 3000) { [Fg]::Front([Fg]::Find($caption)) }
+  if ([Fg]::Title() -ne $title -and $sw.ElapsedMilliseconds -lt 3000) { [Fg]::Front([Fg]::Find($caption)) }
 }
 "front window log:"; $seen | ForEach-Object { "  {0,6} ms  {1}" -f $_.Ms, $_.Title }
 if (-not $app.WaitForExit(120000)) { Stop-Process -Id $app.Id -Force; throw 'app did not finish' }

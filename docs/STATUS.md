@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **14 November 2026** (Hinglish on the owner's voice, Android keyboard: see the end). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **14 November 2026** (Stages 5-9 sections at the end; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -380,6 +380,65 @@ App: "Large v3 (best for Hinglish, with AI clean-up on)" added to the model list
 and checksum handled by the app). Turbo stays the default (faster; Roman Hinglish offline).
 Also fixed: the model list showed "Â·" instead of "·" (wrongly encoded characters).
 Checks: fmt, clippy clean; `cargo test --workspace` 135 passed, 0 failed.
+## 14 November 2026 (night): Stage 8 (install, updates, landing page) and Stage 9 (hardening)
+
+### Stage 8
+- **First run:** with no speech model, Home shows "One step before you can dictate" with one
+  button that downloads the recommended model (Turbo on GPU builds) and selects it when done.
+  Checked: shown in the real app with an empty data folder (window picture taken without
+  focusing it). NOT clicked through (a 547 MB download).
+- **Updates:** Settings > Updates shows the version, "Check for updates" (asks GitHub's public
+  releases list; no personal data) and an opt-in automatic check at start-up (off by
+  default). Nothing is installed automatically; a newer version gives a link to the release
+  page (only github.com release pages of this repository are opened). Checked: version
+  comparison tests; a live request to GitHub returned "No version has been published yet"
+  (the repository has no release). Repository name now lives in `/brand.json`.
+- **Release builds:** `.github/workflows/release-windows.yml` builds the GPU installer in
+  GitHub Actions (Vulkan SDK 1.4.363.1 installed in the job) on a manual run or a `v*` tag;
+  on a tag it is attached to the GitHub Release with a SHA-256 list (the APK is attached by
+  `android.yml`). Manual run 14 Nov: **passed in 14.5 min**, installer 9,783,290 bytes. That
+  CI-built installer was NOT installed here (it would replace the owner's running copy).
+  Nothing has been published: a release needs the owner to push a version tag.
+- **Landing page:** `apps/web/download.html` (published with the web app at
+  `.../download.html`): what it does, downloads, privacy, link to measured results, the
+  SmartScreen warning explained. No certification or accuracy claims. Checked in the browser
+  pane: renders in light and phone width, no sideways scrolling, links correct. Its download
+  buttons point at the latest GitHub Release, which does not exist until the owner publishes.
+- Product name and repository now come only from `/brand.json` in the web app too (it had
+  the name written in its code).
+- **Code signing:** `docs/CODE_SIGNING.md` - free options compared, SignPath Foundation
+  recommended, draft application answers. NOT applied for: the application must come from
+  the owner. Paid options listed only for the owner to decide.
+- Turbo's label no longer says "best accuracy" (Large v3 measured better for Hinglish).
+
+### Stage 9 - hardening, measured on the release build
+- **Long run:** 100 dictations of a 20 s recording in one session (`scripts/longrun.ps1`):
+  **100 ok, 0 failed, all 100 texts identical**, median 850 ms per dictation (p90 878, max
+  1449), app memory 216 MB after warm-up and 218 MB at the end (no growth). Repeated on the
+  final build: 50 of 50 ok, identical, median 862 ms.
+- **Failure tests** (`scripts/failure-tests.ps1`, release build): no model -> clear "No speech
+  model installed" message; corrupt model file -> "could not load model", app ends normally;
+  missing recording -> file error; 3 s of silence -> nothing typed; normal speech -> correct
+  text. **All pass.**
+- **Bug found and fixed:** 3 s of steady hiss produced the invented sentence "So, let's go."
+  Whisper itself rated the hiss as speech (no-speech 0.00), so the old guard could not catch
+  it. New check (`audio::looks_like_speech`): speech rises and falls with each syllable,
+  steady noise does not. Measured: white noise and mains hum 0.1-0.7 dB, every real speech
+  clip >= 16.8 dB (owner's notes 46-49 dB), speech in heavy noise down to 3.3 dB; threshold
+  2 dB, so no speech is ever thrown away. After the fix: hiss and hum -> nothing typed; all
+  speech-in-noise clips still transcribed. Known limit: rumbling ("brown") noise varies
+  enough to pass the check, and Whisper still wrote "So" for it.
+- **Word Command Mode on the final build:** 9 of 12 runs passed. Failures: 2 x the app
+  reported "pasted" but Word's text was unchanged (the same symptom as the earlier 3 of 10,
+  which the 1.5 s wait had cured: 12 of 12 earlier today); 1 x Word's selected text was
+  replaced by a typed "E" while the app reported "nothing selected". The owner was using the
+  laptop during these runs (testing a model) and the test brings Word to the front, so real
+  key presses most likely interfered. Not proven either way: the failure may also be real. Focus-taking tests were stopped for the rest of the session;
+  to re-run when the owner is away: `scripts/selftest-word-command.ps1` (earlier today 12 of
+  12 passed with the owner away).
+- Checks: fmt and clippy clean; `cargo test --workspace` **137 passed, 0 failed, 2 ignored**
+  (the ignored ones are the live GitHub check and a machine-specific test); web and desktop
+  UIs build. GitHub CI: see the run for this commit.
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

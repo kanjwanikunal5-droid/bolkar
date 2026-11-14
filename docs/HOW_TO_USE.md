@@ -164,3 +164,9 @@ replayed, then deleted; you can switch this off in Settings.
 
 **Settings -> Dictation -> Language** and **Settings -> Text size**. Accuracy in each language
 has not been measured yet, so no quality figures are shown.
+
+## Updates
+
+Settings > Updates shows your version. Press **Check for updates** to ask GitHub whether a newer
+version is published; you get a link to the download page. Automatic checking at start-up is
+off unless you turn it on. Nothing is ever installed without you.

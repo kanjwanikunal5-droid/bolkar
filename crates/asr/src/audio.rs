@@ -62,6 +62,36 @@ pub fn resample(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
     out
 }
 
+/// How much the loudness rises and falls, in dB: the spread between loud (95th percentile)
+/// and quiet (10th percentile) 25 ms frames, counting only frames above the signal floor.
+/// Speech rises and falls with every syllable; steady noise (fan, hiss, hum) stays flat.
+pub fn modulation_db(samples: &[f32]) -> f32 {
+    let frame = (SAMPLE_RATE / 40) as usize;
+    let mut levels: Vec<f32> = samples
+        .chunks(frame)
+        .filter(|f| f.len() == frame)
+        .map(rms)
+        .filter(|l| *l > SIGNAL_FLOOR / 4.0)
+        .collect();
+    if levels.len() < 8 {
+        return 0.0;
+    }
+    levels.sort_by(f32::total_cmp);
+    let at = |p: f32| levels[((levels.len() - 1) as f32 * p) as usize].max(1e-9);
+    20.0 * (at(0.95) / at(0.10)).log10()
+}
+
+/// Below this rise-and-fall the audio is treated as steady noise, not speech. Measured
+/// 14 Nov 2026: white noise and mains hum 0.1-0.7 dB; every real speech clip >= 16.8 dB
+/// (owner's voice notes 46-49 dB); speech buried in heavy noise down to 3.3 dB. 2 dB never
+/// drops speech; fluctuating noise above it is left to Whisper and the guard.
+pub const SPEECH_MODULATION_DB: f32 = 2.0;
+
+/// False for steady noise with no speech in it (Whisper invents words for such audio).
+pub fn looks_like_speech(samples: &[f32]) -> bool {
+    modulation_db(samples) >= SPEECH_MODULATION_DB
+}
+
 /// Gentle gain for quiet speech: raises the level towards `target_rms`, never more than
 /// `max_gain` times, never clipping.
 pub fn normalise_quiet(samples: &mut [f32], target_rms: f32, max_gain: f32) {
@@ -209,6 +239,30 @@ mod tests {
         assert!(!has_signal(&vec![0.0; 16_000]));
         assert!(!has_signal(&vec![0.0002; 16_000]));
         assert!(has_signal(&tone(300.0, 16_000, 0.5, 0.004)));
+    }
+
+    #[test]
+    fn steady_noise_is_not_speech_but_syllables_are() {
+        let mut seed = 1u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        };
+        let hiss: Vec<f32> = (0..64_000).map(|_| noise() * 0.05).collect();
+        assert!(!looks_like_speech(&hiss), "{}", modulation_db(&hiss));
+        let hum = tone(50.0, 16_000, 4.0, 0.1);
+        assert!(!looks_like_speech(&hum));
+        // "Syllables": a tone switched on and off four times a second, over quiet hiss.
+        let syllables: Vec<f32> = tone(220.0, 16_000, 4.0, 0.2)
+            .iter()
+            .enumerate()
+            .map(|(i, s)| if (i / 2_000) % 2 == 0 { *s } else { 0.0 } + noise() * 0.002)
+            .collect();
+        assert!(
+            looks_like_speech(&syllables),
+            "{}",
+            modulation_db(&syllables)
+        );
     }
 
     #[test]

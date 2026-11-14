@@ -190,7 +190,7 @@ export function App() {
   return (
     <main>
       <header>
-        <h1>Bolkar</h1>
+        <h1>{__APP_NAME__}</h1>
         <span className="note">Speak, then copy the clean text</span>
       </header>
       {stage === "setup" && <KeySetup onDone={ready} />}

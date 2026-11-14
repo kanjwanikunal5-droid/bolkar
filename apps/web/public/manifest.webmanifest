@@ -1,6 +1,6 @@
 {
-  "name": "Bolkar",
-  "short_name": "Bolkar",
+  "name": "%APP_NAME%",
+  "short_name": "%APP_NAME%",
   "description": "Voice dictation in English and Hinglish. Speak, get clean text, copy.",
   "start_url": "./",
   "scope": "./",

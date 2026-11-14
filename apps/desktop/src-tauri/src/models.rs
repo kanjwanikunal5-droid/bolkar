@@ -35,7 +35,7 @@ pub const CATALOGUE: &[ModelInfo] = &[
     },
     ModelInfo {
         id: "large-v3-turbo",
-        label: "Large v3 Turbo (best accuracy)",
+        label: "Large v3 Turbo (recommended: fast and accurate)",
         file: "ggml-large-v3-turbo-q5_0.bin",
         size_mb: 547,
         ram_mb: 1500,

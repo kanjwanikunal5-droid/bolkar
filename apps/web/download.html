@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b7a7a" />
+    <meta name="description" content="%APP_NAME%: free voice typing for English and Hinglish on Windows, Android and the web. Speech is recognised on your own computer by default." />
+    <link rel="icon" href="./icon-192.png" />
+    <title>%APP_NAME% - speak, and it types</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --dim: #4a4f55;
+        --card: #f3f6f7;
+        --border: #d5dde0;
+        --accent: #00695f;
+        --accent-fg: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15171a;
+          --fg: #f1f3f4;
+          --dim: #b9c0c6;
+          --card: #1f2327;
+          --border: #343a40;
+          --accent: #4fd1c5;
+          --accent-fg: #0b1214;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 1.25rem/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 52rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+      h1 { font-size: 2.6rem; line-height: 1.2; margin: 0.5rem 0; }
+      h2 { font-size: 1.6rem; margin: 2.5rem 0 0.75rem; }
+      p, li { max-width: 46rem; }
+      .lead { font-size: 1.45rem; color: var(--dim); }
+      .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.25rem; }
+      .card h3 { margin: 0 0 0.4rem; font-size: 1.3rem; }
+      .btn {
+        display: inline-block;
+        margin-top: 0.75rem;
+        padding: 0.7rem 1.2rem;
+        border-radius: 10px;
+        background: var(--accent);
+        color: var(--accent-fg);
+        font-weight: 600;
+        text-decoration: none;
+        min-height: 3rem;
+      }
+      .btn:focus-visible, a:focus-visible { outline: 3px solid var(--fg); outline-offset: 3px; }
+      a { color: var(--accent); }
+      kbd { border: 1px solid var(--border); border-radius: 6px; padding: 0.05rem 0.4rem; background: var(--card); font-size: 1.05rem; }
+      .dim { color: var(--dim); }
+      footer { margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; font-size: 1.05rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>%APP_NAME%: speak, and it types</h1>
+      <p class="lead">
+        Free voice typing for English and Hinglish. Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> on Windows, speak, let go:
+        clean text appears in whatever app you are using. Hinglish comes out in Roman letters, the way you type on WhatsApp.
+      </p>
+
+      <h2>Get it</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Windows 10 / 11</h3>
+          <p>The full app: dictation in any app, edit text by voice, meeting notes, scratchpad.</p>
+          <a class="btn" href="https://github.com/%REPOSITORY%/releases/latest">Download for Windows</a>
+          <p class="dim">The installer is not code-signed yet, so Windows may show a blue "Windows protected your PC" box: choose "More info", then "Run anyway".</p>
+        </div>
+        <div class="card">
+          <h3>Android keyboard</h3>
+          <p>A voice keyboard for WhatsApp, Gmail and any app. Early test version.</p>
+          <a class="btn" href="https://github.com/%REPOSITORY%/releases/latest">Download the APK</a>
+          <p class="dim">Android asks once to allow installing from your browser.</p>
+        </div>
+        <div class="card">
+          <h3>Any phone or browser</h3>
+          <p>Speak, then copy the clean text into any app. Nothing to install.</p>
+          <a class="btn" href="./">Open the web app</a>
+          <p class="dim">Needs your own free Groq key.</p>
+        </div>
+      </div>
+
+      <h2>What it does</h2>
+      <ul>
+        <li><strong>Dictation everywhere</strong>: hold <kbd>Ctrl</kbd> + <kbd>Win</kbd>, speak, let go. Double-tap for hands-free.</li>
+        <li><strong>English and Hinglish</strong>, decided automatically for each sentence.</li>
+        <li><strong>Clean-up</strong>: removes "um" and "uh", fixes "2 PM... actually 3 PM" to "3 PM", formats spoken lists. It never invents words; when unsure it leaves your text alone.</li>
+        <li><strong>Edit by voice</strong>: select text, press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>, say "make this a bulleted list". Word and Google Docs get a real list.</li>
+        <li><strong>Meeting notes</strong>: records your microphone and the call audio, then writes a summary with action items.</li>
+        <li><strong>Your words</strong>: a dictionary for names and terms (CMA, EBITDA, GST...), snippets, and a history with your original words kept.</li>
+      </ul>
+
+      <h2>Privacy</h2>
+      <ul>
+        <li>On Windows, speech is recognised <strong>on your own computer</strong> by default. Your voice does not leave it.</li>
+        <li>Optional AI clean-up and cloud recognition use <strong>your own</strong> free Groq key, and only after you agree. The app shows a log of everything it sent.</li>
+        <li>No account, no tracking, no ads.</li>
+      </ul>
+
+      <h2>Accuracy</h2>
+      <p>
+        We publish only numbers we measured ourselves, with how they were measured:
+        <a href="https://github.com/%REPOSITORY%/blob/main/docs/STATUS.md">see the test results</a>.
+        Speech recognition is never perfect; every dictation can be corrected, and your original words are kept.
+      </p>
+
+      <footer>
+        <p>Free and open source. <a href="https://github.com/%REPOSITORY%">Source code</a></p>
+      </footer>
+    </main>
+  </body>
+</html>

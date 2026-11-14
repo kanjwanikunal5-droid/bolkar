@@ -38,6 +38,14 @@ fn main() {
     let mut total_ms = 0;
     for f in &files {
         let samples = audio::read_audio_16k_mono(f).expect("audio");
+        if args.iter().any(|a| a == "--modulation") {
+            println!(
+                "{}\t{:.1}",
+                f.file_stem().unwrap().to_string_lossy(),
+                audio::modulation_db(&samples)
+            );
+            continue;
+        }
         if args.iter().any(|a| a == "--detect") {
             let p = engine
                 .language_probabilities(&samples, &["en", "hi"])

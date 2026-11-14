@@ -379,3 +379,12 @@ textarea.scratchpad {
   line-height: 1.5;
 }
 
+
+.first-run {
+  border: 2px solid var(--accent);
+}
+.first-run progress {
+  width: 20rem;
+  max-width: 100%;
+}
+

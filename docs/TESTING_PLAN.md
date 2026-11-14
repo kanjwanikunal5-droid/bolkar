@@ -18,6 +18,21 @@ phone and logged here with the date. Results live in [STATUS.md](STATUS.md).
 | Hardware advice | `hardware.rs`, `probe.rs` tests | Model choice per machine class; Vulkan summary parsing |
 | Portability | CI job `core-portability` | Core compiles for wasm32 and both Android targets |
 | Secrets | CI job `secret-scan` (gitleaks) | No keys committed |
+| Hinglish spelling rules | `crates/core/tests/hinglish_spelling.rs` reading `spec/hinglish/spelling.json` | 10 fixes and 6 must-not-change sentences |
+| Command Mode | `crates/core/tests/command_fixtures.rs` reading `spec/commands/cases.json` | Instructions read correctly; lists/case/clean-up exact; free-form goes to AI |
+| AI edits | `command.rs` tests | AI edits that invent numbers are rejected |
+| Noise gate | `asr/src/audio.rs` tests | Steady hiss and hum are not speech; syllable-like sound is |
+| Update check | `update.rs` tests (+ one `--ignored` live test) | Versions compare by number; GitHub answer handled |
+
+## Real-app tests (scripts, run on the owner's laptop with a throwaway data folder)
+
+| Script | What it does | Brings a window to the front? |
+|---|---|---|
+| `scripts/failure-tests.ps1` | no model, corrupt model, missing file, silence, steady noise, normal speech | No |
+| `scripts/longrun.ps1 -Runs 100` | same recording 100 times: failures, identical text, time, memory | No |
+| `scripts/selftest-notepad.ps1` | dictation pasted into Notepad, clipboard restored | Yes - run only when the owner is away |
+| `scripts/selftest-word-command.ps1` | Command Mode in Word: real bulleted / numbered list | Yes - run only when the owner is away |
+| `scripts/snap-window.ps1` | picture of one app window without focusing it | No |
 
 ## Accuracy benchmarks (Stage 0 harness, Stage 6 results)
 

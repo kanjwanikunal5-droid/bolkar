@@ -242,7 +242,11 @@ impl WhisperEngine {
     pub fn transcribe(&self, samples: &[f32], options: &Options) -> Result<Transcript, String> {
         let audio_ms = samples.len() as u64 * 1000 / u64::from(SAMPLE_RATE);
         // Too short or silent: do not even ask the model, it would invent something.
-        if samples.len() < (SAMPLE_RATE as usize) / 4 || !audio::has_signal(samples) {
+        // Steady noise with no speech (fan, hiss, hum): Whisper would invent words for it.
+        if samples.len() < (SAMPLE_RATE as usize) / 4
+            || !audio::has_signal(samples)
+            || !audio::looks_like_speech(samples)
+        {
             return Ok(Transcript {
                 text: String::new(),
                 segments: vec![],

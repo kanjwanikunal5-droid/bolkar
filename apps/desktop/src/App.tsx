@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
+import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status, type UpdateInfo } from "./api";
 import { APP_NAME } from "./brand";
 import { MeetingsPage } from "./Meetings";
 import { AiSettings, DictionaryPage, FixBox, MicMeter, SnippetsPage, UploadsCard } from "./Pages";
@@ -98,6 +98,107 @@ function DictationRow({ d, onChanged, startFixing = false }: { d: Dictation; onC
   );
 }
 
+/** Settings card: version, manual update check, opt-in check at start-up. */
+function UpdatesCard({ version, auto, setAuto }: { version: string; auto: boolean; setAuto: (on: boolean) => void }) {
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="card">
+      <h3>Updates</h3>
+      <p>
+        You have version <strong>{version}</strong>.
+      </p>
+      <div className="row">
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void api.checkUpdate().then((i) => {
+              setInfo(i);
+              setBusy(false);
+            });
+          }}
+        >
+          {busy ? "Checking..." : "Check for updates"}
+        </button>
+        {info?.newer && (
+          <button className="btn primary" onClick={() => void api.openReleasePage(info.url)}>
+            Open the download page
+          </button>
+        )}
+      </div>
+      {info && <p aria-live="polite">{info.message}</p>}
+      <label className="row">
+        <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+        Check automatically when the app starts (asks GitHub; nothing is installed without you)
+      </label>
+    </div>
+  );
+}
+
+/** First run: one button that downloads the recommended speech model and selects it. */
+function FirstRun({ gpu, onReady, openSettings }: { gpu: boolean; onReady: () => void; openSettings: () => void }) {
+  const id = gpu ? "large-v3-turbo" : "small";
+  const [model, setModel] = useState<Model | null>(null);
+  const [progress, setProgress] = useState<ModelProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api.models().then((all) => setModel(all.find((m) => m.id === id) ?? null));
+    const off = listen<ModelProgress>("model-progress", (e) => {
+      if (e.payload.id !== id) return;
+      if (e.payload.finished) {
+        setProgress(null);
+        if (e.payload.error) setError(e.payload.error);
+        else void api.setSetting("model", id).then(onReady);
+      } else {
+        setProgress(e.payload);
+      }
+    });
+    return () => {
+      void off.then((f) => f());
+    };
+  }, [id, onReady]);
+
+  const percent = progress?.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  return (
+    <div className="card first-run" role="region" aria-label="Set up">
+      <h3>One step before you can dictate</h3>
+      <p>
+        {APP_NAME} recognises speech on this computer, so it needs a speech model once
+        {model ? ` (${model.label}, ${model.size_mb} MB)` : ""}. After that it works offline.
+      </p>
+      {error && (
+        <p className="bad" role="alert">
+          Download failed: {error}. Check the internet connection and try again.
+        </p>
+      )}
+      {progress ? (
+        <div className="row">
+          <progress value={progress.done} max={progress.total || 1} aria-label="Downloading the speech model" />
+          <span aria-live="polite">{percent}%</span>
+        </div>
+      ) : (
+        <div className="row">
+          <button
+            className="btn primary"
+            onClick={() => {
+              setError(null);
+              void api.downloadModel(id).catch((e) => setError(String(e)));
+            }}
+          >
+            Download and set up ({model?.size_mb ?? "..."} MB)
+          </button>
+          <button className="btn" onClick={openSettings}>
+            Choose another model
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelList({ selected, onSelect }: { selected: string; onSelect: (id: string) => void }) {
   const [models, setModels] = useState<Model[]>([]);
   const [progress, setProgress] = useState<Record<string, ModelProgress>>({});
@@ -188,6 +289,7 @@ export function App() {
 
   const [fixId, setFixId] = useState<string | null>(null);
   const [scratchFocus, setScratchFocus] = useState(0);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
     refresh();
@@ -205,7 +307,9 @@ export function App() {
       setPage("scratchpad");
       setScratchFocus((n) => n + 1);
     });
+    const offUpdate = listen<UpdateInfo>("update-available", (e) => setUpdate(e.payload));
     return () => {
+      void offUpdate.then((f) => f());
       void off.then((f) => f());
       void offFix.then((f) => f());
       void offScratch.then((f) => f());
@@ -253,13 +357,16 @@ export function App() {
             Shortcuts are not working: {status.hook_error}
           </div>
         )}
-        {status && !status.model_installed && (
-          <div className="banner" role="alert">
-            No speech model is installed yet. Go to Settings and download one to start dictating.{" "}
-            <button className="btn" onClick={() => setPage("settings")}>
-              Open Settings
+        {update?.newer && (
+          <div className="banner" role="status">
+            {update.message}{" "}
+            <button className="btn" onClick={() => void api.openReleasePage(update.url)}>
+              Open the download page
             </button>
           </div>
+        )}
+        {status && !status.model_installed && page !== "settings" && (
+          <FirstRun gpu={status.gpu_build} onReady={refresh} openSettings={() => setPage("settings")} />
         )}
 
         {page === "home" && (
@@ -351,6 +458,11 @@ export function App() {
                 </label>
               )}
             </div>
+            <UpdatesCard
+              version={status?.version ?? ""}
+              auto={settings.check_updates === "on"}
+              setAuto={(on) => set("check_updates", on ? "on" : "off")}
+            />
             <div className="card">
               <h3>Dictation</h3>
               <MicMeter />

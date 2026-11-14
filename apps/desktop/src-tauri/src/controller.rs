@@ -665,8 +665,9 @@ impl Controller {
         };
         let started = Instant::now();
 
-        let has_speech =
-            samples.len() >= app_asr::SAMPLE_RATE as usize / 4 && asr_audio::has_signal(&samples);
+        let has_speech = samples.len() >= app_asr::SAMPLE_RATE as usize / 4
+            && asr_audio::has_signal(&samples)
+            && asr_audio::looks_like_speech(&samples);
         // English or Hinglish? Whisper's own language detector decides on this computer
         // (measured threshold, see app_asr::ENGLISH_SURE), for local and cloud recognition.
         let mut hinglish_route = language == "hinglish";

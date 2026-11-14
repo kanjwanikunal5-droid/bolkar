@@ -74,6 +74,14 @@ export interface Model {
   installed: boolean;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  newer: boolean;
+  url: string | null;
+  message: string;
+}
+
 export interface ModelProgress {
   id: string;
   done: number;
@@ -148,6 +156,8 @@ export const api = {
   dictations: (limit = 200) => invoke<Dictation[]>("list_dictations", { limit }),
   deleteDictation: (id: string) => invoke<void>("delete_dictation", { id }),
   copy: (text: string) => invoke<void>("copy_text", { text }),
+  checkUpdate: () => invoke<UpdateInfo>("check_update"),
+  openReleasePage: (url: string | null) => invoke<void>("open_release_page", { url }),
   models: () => invoke<Model[]>("list_models"),
   downloadModel: (id: string) => invoke<void>("download_model", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
