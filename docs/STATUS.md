@@ -279,8 +279,7 @@ JNI, so the same clean-up rules, AI checks and Hinglish prompts as desktop and w
 - Build: `.github/workflows/android.yml` builds the Rust library for arm64, armv7 and x86_64
   (cargo-ndk), runs the Rust bridge tests and the JVM unit tests (all golden fixtures through
   JNI), builds the APK and keeps it as a workflow artifact; a `v*` tag attaches it to a Release.
-NOT run on this laptop (no Android SDK or JDK installed here; installing them needs the owner's
-OK): Gradle build, APK, the JNI unit tests. They run in GitHub Actions; see the result there.
+Not built on this laptop (no Android SDK or JDK here). GitHub Actions run 14 Nov 2026 (second\ntry; the first failed on a retired SDK package name): Rust bridge tests passed, JVM unit tests\n(all golden fixtures through JNI) passed, APK built (6.9 MB, debug-signed).\nA new Windows installer with the Hinglish changes was also built (not installed; the owner\nruns it, because installs started from the builder's shell land in a private copy).
 NOT run: the keyboard on a real phone (WhatsApp, Gmail, Chrome), the phone recogniser, the
 in-person recorder (not built yet).
 
