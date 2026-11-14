@@ -1,4 +1,4 @@
-﻿//! Desktop app: system-wide dictation for Windows.
+//! Desktop app: system-wide dictation for Windows.
 
 mod audio;
 mod controller;
@@ -294,6 +294,8 @@ const SETTINGS: &[(&str, &str)] = &[
     ("save_audio", "true"),
     ("audio_retention_days", "7"),
     ("ui_scale", "125"),
+    // Scratchpad notes (Alt+Shift+N), kept on this computer.
+    ("scratchpad", ""),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -728,6 +730,8 @@ struct Status {
     model_installed: bool,
     words_this_week: i64,
     shortcuts: Vec<(&'static str, &'static str)>,
+    /// Cloud speech recognition is on (and agreed to).
+    cloud_speech: bool,
 }
 
 #[tauri::command]
@@ -767,7 +771,13 @@ fn get_status(state: State<AppState>) -> Status {
                 "Alt + Shift + H",
                 "Switch language: English + Hinglish / English only / Hinglish only",
             ),
+            (
+                "Alt + Shift + C",
+                "Command Mode: select text, press, say what to do (\"make this a bulleted list\"), press again",
+            ),
+            ("Alt + Shift + N", "Open the Scratchpad (notes you can dictate into)"),
         ],
+        cloud_speech: asr_config(&state).is_some(),
     }
 }
 
@@ -907,6 +917,7 @@ async fn transcribe_file(
             path: PathBuf::from(path),
             insert,
             delay_ms: delay_ms.unwrap_or(0),
+            command: false,
             reply,
         })
         .map_err(|e| e.to_string())?;
@@ -933,6 +944,8 @@ fn self_test(app: &AppHandle) {
     };
     let out = std::env::var_os("APP_SELFTEST_OUT").map(PathBuf::from);
     let insert = std::env::var("APP_SELFTEST_INSERT").is_ok_and(|v| v == "1");
+    // Command Mode self-test: the WAV is a spoken instruction for the selection in front.
+    let command = std::env::var("APP_SELFTEST_COMMAND").is_ok_and(|v| v == "1");
     let delay_ms = std::env::var("APP_SELFTEST_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -979,6 +992,7 @@ fn self_test(app: &AppHandle) {
                     path: PathBuf::from(wav),
                     insert,
                     delay_ms,
+                    command,
                     reply,
                 })
                 .map_err(|e| e.to_string())
@@ -1004,10 +1018,15 @@ fn self_test(app: &AppHandle) {
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default();
+    // One copy at a time in normal use. A self-test run (separate data folder) must not hand
+    // over to, or disturb, the copy the owner is using.
+    if std::env::var_os("APP_SELFTEST_WAV").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app)
-        }))
+        }));
+    }
+    builder
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_settings,

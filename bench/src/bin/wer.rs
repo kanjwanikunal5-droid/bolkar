@@ -51,6 +51,10 @@ fn run() -> Result<(), String> {
         report.words.reference_len
     );
     println!(
+        "WER with Hinglish spelling variants accepted (wo/woh, to/toh, ...): {}",
+        percent(report.wer_hinglish_tolerant)
+    );
+    println!(
         "substitutions {} | deletions {} | insertions {}",
         report.words.substitutions, report.words.deletions, report.words.insertions
     );

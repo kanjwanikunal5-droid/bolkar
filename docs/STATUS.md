@@ -283,6 +283,74 @@ Not built on this laptop (no Android SDK or JDK here). GitHub Actions run 14 Nov
 NOT run: the keyboard on a real phone (WhatsApp, Gmail, Chrome), the phone recogniser, the
 in-person recorder (not built yet).
 
+## 14 November 2026 (afternoon): Stage 6 (English + Hinglish accuracy) and Stage 7 (Command Mode)
+
+### Stage 6 - benchmark on 90 clips with known text
+New test set (in git: `bench/sets/hinglish30.tsv`, `bench/sets/english15.tsv`): 30 everyday
+Hinglish and 15 English sentences, each spoken by the two Windows Indian-English voices
+(Heera, Ravi) with `scripts/make-clips.ps1` -> 90 clips. SYNTHETIC speech: these voices
+pronounce Roman Hindi badly ("ghar pahunch gaya" comes out roughly as "ge paahyun ch"), so the
+Hinglish numbers are pessimistic and mainly compare routes. Scored with `wer`; "tolerant"
+also accepts equally normal Hinglish spellings (wo/woh, to/toh, jane/jaane, dunga/doonga; list
+in `metrics::HINGLISH_VARIANTS`, different words are never merged).
+
+| Set | Route | Word errors | Tolerant |
+|---|---|---|---|
+| English, 30 clips | local, app routing (English vs Hinglish per clip) | **0.93%** (3 of 322 words) | 0.93% |
+| Hinglish, 60 clips | local, app routing | 41.4% | 36.0% |
+| Hinglish, Heera 30 | local + offline spelling rules | 35.4% | 29.3% |
+| Hinglish, Heera 30 | local + rules + AI spelling polish | 23.2% | 18.9% |
+| Hinglish, Heera 30 | Groq cloud `hi` + AI script conversion | 17.5% | 14.5% |
+| Hinglish, Heera 30 | Groq cloud + AI script conversion + AI spelling polish | **13.5%** | **10.4%** |
+
+- 7 of 60 Hinglish clips (all Ravi) were routed as English by the local language check.
+- Most remaining cloud errors are words the synthetic voice garbled ("Humari train shaam
+  saat baje" spoken so that even a human would mishear). Real speech is the real test.
+- The polish prompt (v2) now forbids adding words and the check allows at most one extra
+  word; same score within noise (13.8% / 10.8%). It still once turned the garbled "baad
+  kaate hai" into "baad mein kaam hai" on synthetic audio: an AI step can still rewrite a
+  garbled phrase; the raw transcript is always kept in history.
+- New offline Hinglish spelling rules (`app_core::hinglish`, fixtures
+  `spec/hinglish/spelling.json`, 10 fix cases + 6 must-not-change): applied on the owner's 5
+  real voice notes they made 11 fixes and no wrong change (Baut->Bahut x2, vohan->wahan,
+  "aung ba"->aaunga, wishwaaz->vishwas, Pahle->Pehle, zyadha->zyada, mea->mein, "milpaun ga"
+  ->milpaunga x2). On the synthetic set they change nothing (those spellings do not occur).
+  On by default on every Hinglish route (desktop, web, Android); no AI needed.
+- The owner's own 5 notes still have no corrected reference text, so no word-error figure on
+  his voice. A draft to correct is in `bench/my_recordings/owner/refs-DRAFT-please-correct.tsv`.
+- Not tried: the full Whisper large-v3 model (1.1 GB download), which may be better than
+  "turbo" for Hindi. Needs the owner's OK to download.
+
+### Stage 7 - Command Mode and Scratchpad
+- **Command Mode** (`Alt+Shift+C`, again to finish, `Esc` cancels): copies the selection
+  (clipboard put back afterwards), listens for an instruction, applies it, pastes over the
+  selection. Built in, no AI: bulleted list, numbered list, all caps, lowercase, title case,
+  sentence case, one paragraph, clean up (English and some Hinglish phrasings, e.g. "bullet
+  points bana do"). Lists are pasted with an HTML version, so Word and Google Docs make REAL
+  lists. Other instructions ("make it more formal") go to the user's AI and are checked
+  (`command::accept_ai_edit`: no new numbers, not wildly longer). Every command is saved in
+  history (instruction + selection as the raw text, result separately).
+- Tests: `app_core::command` unit tests, `spec/commands/cases.json` (10 commands + 4 that must
+  go to the AI), clipboard HTML header test, shortcut state machine test.
+- **Real check in Microsoft Word** (`scripts/selftest-word-command.ps1`, release build, spoken
+  instruction from a synthetic voice, separate data folder): Word asked through its object
+  model after each run. "Make this a bulleted list." -> 1 real list, 3 bullet items;
+  "Make it a numbered list." -> 1 real list, 3 items numbered 1. 2. 3.; clipboard restored.
+  First version failed 3 of 10 runs (nothing pasted): Word reads pasted HTML late and the old
+  clipboard had already been put back. Fix: list pastes wait 1.5 s before the restore, and
+  the selection copy is tried twice. After the fix: **12 of 12 runs passed** (6 bullet, 6
+  numbered).
+- Self-test runs no longer use the one-copy-at-a-time rule, so a test never hands over to
+  (or disturbs) the copy the owner is running.
+- **Scratchpad** (`Alt+Shift+N`, Ctrl+Win+N was taken): a notes page in the app, saved on this
+  computer as you type, Copy all / Clear. Checked: UI type-check and build only; NOT clicked
+  through in the running app.
+- Home page no longer says "audio never leaves this computer" when cloud recognition is on.
+- NOT run: Command Mode in Google Docs (needs the owner's Google sign-in), an AI command end
+  to end, a Hinglish spoken command with the owner's voice. NOT built: file tagging, extra
+  context awareness beyond the existing per-app style.
+- Checks: `cargo fmt --check` and `cargo clippy --workspace -D warnings` clean;
+  `cargo test --workspace` **135 passed, 0 failed, 1 ignored**; web and desktop UIs build.
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

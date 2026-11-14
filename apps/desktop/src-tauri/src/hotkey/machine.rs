@@ -1,4 +1,4 @@
-﻿//! The shortcut state machine. Pure logic, no Windows calls, so it is fully unit-tested.
+//! The shortcut state machine. Pure logic, no Windows calls, so it is fully unit-tested.
 //!
 //! Defaults:
 //! - hold Ctrl+Win            push-to-talk
@@ -6,12 +6,16 @@
 //! - Ctrl+Win+H               hands-free on / off (also locks a push-to-talk into hands-free)
 //! - Esc while recording      cancel
 //! - Alt+Shift+Z / Alt+Shift+X  paste / copy the last transcript
+//! - Alt+Shift+C              Command Mode on (edit the selection by voice); again = done
+//! - Alt+Shift+N              open the Scratchpad
 
 pub const VK_ESCAPE: u32 = 0x1B;
 pub const VK_H: u32 = 0x48;
 pub const VK_X: u32 = 0x58;
 pub const VK_Z: u32 = 0x5A;
 pub const VK_F: u32 = 0x46;
+pub const VK_C: u32 = 0x43;
+pub const VK_N: u32 = 0x4E;
 
 /// A press shorter than this is a "tap", not a dictation.
 pub const TAP_MS: u32 = 250;
@@ -32,6 +36,12 @@ pub enum Action {
     FixLast,
     /// Alt+Shift+H: English + Hinglish (auto) -> English only -> Hinglish only.
     CycleLanguage,
+    /// Alt+Shift+C: copy the selection and listen for an instruction.
+    CommandStart,
+    /// Alt+Shift+C again: apply the spoken instruction to the selection.
+    CommandStop,
+    /// Alt+Shift+N: open the Scratchpad.
+    OpenScratchpad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,6 +58,7 @@ enum Mode {
     Idle,
     Ptt,
     HandsFree,
+    Command,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +184,7 @@ impl Machine {
                         }
                     }
                 }
+                Mode::Command => {}
                 Mode::HandsFree => {
                     if combo && !was_combo && down {
                         self.mode = Mode::Idle;
@@ -219,6 +231,17 @@ impl Machine {
                     Self::act(Action::Cancel, false, false)
                 }
             }
+            Mode::Command => {
+                if vk == VK_ESCAPE {
+                    self.mode = Mode::Idle;
+                    swallow(self, Action::Cancel)
+                } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_C {
+                    self.mode = Mode::Idle;
+                    swallow(self, Action::CommandStop)
+                } else {
+                    Decision::default()
+                }
+            }
             Mode::HandsFree => {
                 if vk == VK_ESCAPE {
                     self.mode = Mode::Idle;
@@ -244,6 +267,11 @@ impl Machine {
                     swallow(self, Action::FixLast)
                 } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_H {
                     swallow(self, Action::CycleLanguage)
+                } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_C {
+                    self.mode = Mode::Command;
+                    swallow(self, Action::CommandStart)
+                } else if self.alt && self.shift && !self.ctrl && !self.win && vk == VK_N {
+                    swallow(self, Action::OpenScratchpad)
                 } else {
                     Decision::default()
                 }
@@ -350,6 +378,48 @@ mod tests {
             ],
         );
         assert_eq!(got, [Action::PttStart, Action::Cancel, Action::PttStart]);
+    }
+
+    #[test]
+    fn alt_shift_c_starts_and_finishes_command_mode() {
+        let mut m = Machine::new();
+        let got = actions(
+            &mut m,
+            &[
+                (ALT, true, 0),
+                (SHIFT, true, 10),
+                (VK_C, true, 20),
+                (VK_C, false, 30),
+                (SHIFT, false, 40),
+                (ALT, false, 50),
+            ],
+        );
+        assert_eq!(got, vec![Action::CommandStart]);
+        assert!(m.is_recording());
+        // Ordinary typing and Ctrl+Win do not end it.
+        assert!(actions(&mut m, &[(VK_H, true, 100), (VK_H, false, 110)]).is_empty());
+        let got = actions(
+            &mut m,
+            &[(ALT, true, 200), (SHIFT, true, 210), (VK_C, true, 220)],
+        );
+        assert_eq!(got, vec![Action::CommandStop]);
+        assert!(!m.is_recording());
+        let mut m = Machine::new();
+        actions(
+            &mut m,
+            &[
+                (ALT, true, 0),
+                (SHIFT, true, 10),
+                (VK_C, true, 20),
+                (VK_C, false, 30),
+                (SHIFT, false, 40),
+                (ALT, false, 50),
+            ],
+        );
+        assert_eq!(
+            actions(&mut m, &[(VK_ESCAPE, true, 90)]),
+            vec![Action::Cancel]
+        );
     }
 
     #[test]

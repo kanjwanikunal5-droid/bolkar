@@ -7,8 +7,10 @@ pub mod brand {
     include!(concat!(env!("OUT_DIR"), "/brand.rs"));
 }
 
+pub mod command;
 pub mod dictionary;
 pub mod hardware;
+pub mod hinglish;
 pub mod learn;
 pub mod llm;
 pub mod metrics;

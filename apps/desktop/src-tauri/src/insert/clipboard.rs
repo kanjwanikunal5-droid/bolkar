@@ -132,13 +132,44 @@ fn utf16_bytes(text: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Wraps an HTML fragment in the Windows "HTML Format" clipboard header (byte offsets of the
+/// HTML and of the fragment, all in UTF-8).
+pub fn cf_html(fragment: &str) -> Vec<u8> {
+    const PRE: &str = "<html><body>\r\n<!--StartFragment-->";
+    const POST: &str = "<!--EndFragment-->\r\n</body></html>";
+    let header = |a: usize, b: usize, c: usize, d: usize| {
+        format!(
+            "Version:0.9\r\nStartHTML:{a:010}\r\nEndHTML:{b:010}\r\nStartFragment:{c:010}\r\nEndFragment:{d:010}\r\n"
+        )
+    };
+    let len = header(0, 0, 0, 0).len();
+    let start_frag = len + PRE.len();
+    let end_frag = start_frag + fragment.len();
+    let end_html = end_frag + POST.len();
+    let mut out = header(len, end_html, start_frag, end_frag).into_bytes();
+    out.extend_from_slice(PRE.as_bytes());
+    out.extend_from_slice(fragment.as_bytes());
+    out.extend_from_slice(POST.as_bytes());
+    out.push(0);
+    out
+}
+
 /// Puts `text` on the clipboard marked so that clipboard history (Win+V) and cloud clipboard
 /// ignore it. Returns the clipboard sequence number right after the write.
 pub fn write_text_private(text: &str) -> Result<u32, String> {
+    write_private(text, None)
+}
+
+/// Like [`write_text_private`], with an optional HTML version (Word and Google Docs paste
+/// HTML lists as real lists; plain-text apps use the text).
+pub fn write_private(text: &str, html: Option<&str>) -> Result<u32, String> {
     let guard = Guard::open()?;
     unsafe {
         EmptyClipboard().map_err(|e| e.to_string())?;
         set_bytes(CF_UNICODETEXT, &utf16_bytes(text))?;
+        if let Some(fragment) = html {
+            set_bytes(registered(w!("HTML Format")), &cf_html(fragment))?;
+        }
         // Documented by Microsoft: presence of this format excludes the content from
         // clipboard history and from cloud sync.
         let _ = set_bytes(
@@ -155,7 +186,6 @@ pub fn write_text_private(text: &str) -> Result<u32, String> {
 }
 
 /// Reads the clipboard's text, if any.
-#[cfg(test)]
 pub fn read_text() -> Option<String> {
     let _guard = Guard::open().ok()?;
     unsafe {
@@ -216,6 +246,22 @@ mod tests {
     /// only run on a real Windows session (the owner's laptop).
     fn on_ci() -> bool {
         std::env::var_os("GITHUB_ACTIONS").is_some()
+    }
+
+    #[test]
+    fn html_header_offsets_point_at_the_fragment() {
+        let bytes = cf_html("<ul><li>a & b</li></ul>");
+        let s = String::from_utf8(bytes[..bytes.len() - 1].to_vec()).unwrap();
+        let num = |key: &str| -> usize {
+            let at = s.find(key).unwrap() + key.len();
+            s[at..at + 10].parse().unwrap()
+        };
+        assert_eq!(
+            &s[num("StartFragment:")..num("EndFragment:")],
+            "<ul><li>a & b</li></ul>"
+        );
+        assert!(s[num("StartHTML:")..].starts_with("<html>"));
+        assert_eq!(num("EndHTML:"), s.len());
     }
 
     #[test]

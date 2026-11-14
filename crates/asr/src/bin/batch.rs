@@ -2,6 +2,7 @@
 //! ready for `wer --ref refs.tsv --hyp out.tsv`.
 //!
 //!   batch <model.bin> <folder> [--lang hi] [--prompt "..."] [--beam 5] [--cpu]
+//!         [--auto --hi-prompt "..."]   (English or Hinglish per clip, as the app does)
 
 use std::{env, path::Path};
 
@@ -49,17 +50,26 @@ fn main() {
             );
         }
         // --auto: English if Whisper is sure it is English, otherwise the Hinglish route
-        // (Hindi recognition, script converted later), mirroring the app.
+        // (Hindi recognition steered to Roman letters by --hi-prompt), mirroring the app.
         let options = if args.iter().any(|a| a == "--auto") {
             let p = engine
                 .language_probabilities(&samples, &["en", "hi"])
                 .expect("detect");
-            if !app_asr::is_hinglish(p[0], p[1]) {
-                options.clone()
+            let hinglish = app_asr::is_hinglish(p[0], p[1]);
+            eprintln!(
+                "{} route {}",
+                f.file_stem().unwrap().to_string_lossy(),
+                if hinglish { "hinglish" } else { "english" }
+            );
+            if !hinglish {
+                Options {
+                    language: Some("en".into()),
+                    ..options.clone()
+                }
             } else {
                 Options {
                     language: Some("hi".into()),
-                    initial_prompt: None,
+                    initial_prompt: flag("--hi-prompt"),
                     ..options.clone()
                 }
             }

@@ -99,6 +99,11 @@ pub mod api {
         llm::parse_polish(answer, source).unwrap_or_default()
     }
 
+    /// Offline Hinglish spelling rules (bahut, karunga, ...).
+    pub fn hinglish_spelling(text: &str) -> String {
+        app_core::hinglish::normalise(text)
+    }
+
     pub fn roman_hinglish_example() -> String {
         llm::ROMAN_HINGLISH_EXAMPLE.to_string()
     }
@@ -227,6 +232,16 @@ mod jni_glue {
         source: JString<'l>,
     ) -> jstring {
         let out = api::accept_polish(&arg(&mut env, &answer), &arg(&mut env, &source));
+        ret(&mut env, out)
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_app_voice_Core_hinglishSpelling<'l>(
+        mut env: JNIEnv<'l>,
+        _c: JClass<'l>,
+        text: JString<'l>,
+    ) -> jstring {
+        let out = api::hinglish_spelling(&arg(&mut env, &text));
         ret(&mut env, out)
     }
 

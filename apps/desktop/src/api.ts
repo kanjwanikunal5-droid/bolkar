@@ -41,6 +41,7 @@ export interface Status {
   model_installed: boolean;
   words_this_week: number;
   shortcuts: [string, string][];
+  cloud_speech: boolean;
 }
 
 export interface Dictation {

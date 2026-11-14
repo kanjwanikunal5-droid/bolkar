@@ -104,6 +104,12 @@ pub fn accept_polish(answer: &str, source: &str) -> String {
     llm::parse_polish(answer, source).unwrap_or_default()
 }
 
+/// Offline Hinglish spelling rules (bahut, karunga, ...).
+#[wasm_bindgen]
+pub fn hinglish_spelling(text: &str) -> String {
+    app_core::hinglish::normalise(text)
+}
+
 #[wasm_bindgen]
 pub fn roman_hinglish_example() -> String {
     llm::ROMAN_HINGLISH_EXAMPLE.to_string()

@@ -15,6 +15,7 @@ const VK_MENU: u16 = 0x12;
 const VK_RETURN: u16 = 0x0D;
 const VK_INSERT: u16 = 0x2D;
 const VK_V: u16 = 0x56;
+const VK_C: u16 = 0x43;
 const VK_LWIN: u16 = 0x5B;
 const VK_RWIN: u16 = 0x5C;
 
@@ -99,6 +100,16 @@ pub fn send_paste(paste: PasteKey) -> Result<(), String> {
     let mut inputs: Vec<INPUT> = chord.iter().map(|vk| key(*vk, false)).collect();
     inputs.extend(chord.iter().rev().map(|vk| key(*vk, true)));
     send(&inputs)
+}
+
+/// Ctrl+C: copies the selection in the focused app.
+pub fn send_copy() -> Result<(), String> {
+    send(&[
+        key(VK_CONTROL, false),
+        key(VK_C, false),
+        key(VK_C, true),
+        key(VK_CONTROL, true),
+    ])
 }
 
 /// Types text directly, character by character. Newlines become the Enter key.

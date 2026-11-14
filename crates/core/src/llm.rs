@@ -102,7 +102,8 @@ pub fn hinglish_polish_prompt() -> String {
         .replace('\r', "")
 }
 
-/// Checks a Hinglish polish: same script, numbers unchanged, word count within 15%, and at
+/// Checks a Hinglish polish: same script, numbers unchanged, at most one word more and at
+/// most 15% fewer words, and at
 /// least 60% of the words left exactly as they were (it may fix spellings, not rewrite).
 pub fn parse_polish(content: &str, source: &str) -> Result<String, String> {
     let out = parse_transliteration(content, source)?;
@@ -113,7 +114,8 @@ pub fn parse_polish(content: &str, source: &str) -> Result<String, String> {
     let src: Vec<String> = source.split_whitespace().map(norm).collect();
     let dst: Vec<String> = out.split_whitespace().map(norm).collect();
     let (a, b) = (src.len(), dst.len());
-    if b * 100 < a * 85 || b * 100 > a * 115 + 100 {
+    // Joining split words ("karun ga") shortens; nothing may grow by more than one word.
+    if b * 100 < a * 85 || b > a + 1 {
         return Err(format!("word count changed too much ({a} -> {b})"));
     }
     let src_set: std::collections::HashSet<&String> = src.iter().collect();

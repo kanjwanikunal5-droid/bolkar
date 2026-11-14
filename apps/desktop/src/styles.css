@@ -373,3 +373,9 @@ html.pill-page body {
   background: transparent !important;
 }
 
+
+textarea.scratchpad {
+  min-height: 22rem;
+  line-height: 1.5;
+}
+

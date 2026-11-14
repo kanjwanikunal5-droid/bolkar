@@ -50,6 +50,7 @@ class Dictation(private val prefs: Prefs, private val secrets: SecretStore) {
 
         // Common WhatsApp spellings and obvious mis-hearings.
         val hinglishText = hinglish || (prefs.language != "en" && looksHinglish(text))
+        if (hinglishText && !Core.hasDevanagari(text)) text = Core.hinglishSpelling(text)
         if (hinglishText && key != null && !Core.hasDevanagari(text)) {
             val answer = runCatching {
                 Groq.chat(key, Core.polishPrompt(), JSONObject().put("text", text).toString())

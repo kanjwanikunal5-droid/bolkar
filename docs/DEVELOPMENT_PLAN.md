@@ -20,7 +20,8 @@ Stage 1 is the heart of the product and must be solid before anything else is bu
 
 ## Decisions carried into later stages
 
-- Scratchpad shortcut: Ctrl+Win+N is taken on the owner's laptop; choose another in Stage 7.
+- Scratchpad shortcut: Ctrl+Win+N is taken on the owner's laptop; Stage 7 uses Alt+Shift+N.
+- Command Mode shortcut: Alt+Shift+C (press, speak, press again).
 - Light theme needs a darker accent teal than `#0FA3A3` to reach 4.5:1 contrast.
 - Android unit tests and TypeScript lint/tests join CI when that code exists (Stages 4 and 5).
 

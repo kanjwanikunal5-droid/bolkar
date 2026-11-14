@@ -125,6 +125,60 @@ pub fn word_errors(reference: &str, hypothesis: &str) -> EditCounts {
     align(&rw, &hw)
 }
 
+/// Hinglish has no standard Roman spelling: "wo" and "woh", "to" and "toh", "jane" and "jaane"
+/// are all normal on WhatsApp. For the *spelling-tolerant* score, each listed variant is
+/// mapped to one form on both sides. Only pure spelling variants of the same word are listed;
+/// different words ("tumhe" / "tumhare", "main" / "mein") are never merged. The strict score
+/// (`word_errors`) does not use this.
+const HINGLISH_VARIANTS: &[(&str, &str)] = &[
+    ("woh", "wo"),
+    ("vo", "wo"),
+    ("toh", "to"),
+    ("yeh", "ye"),
+    ("jaane", "jane"),
+    ("jaana", "jana"),
+    ("jaayenge", "jayenge"),
+    ("jaayega", "jayega"),
+    ("jaayegi", "jayegi"),
+    ("doonga", "dunga"),
+    ("parega", "padega"),
+    ("mehenga", "mehnga"),
+    ("mehanga", "mehnga"),
+    ("nahin", "nahi"),
+    ("hun", "hoon"),
+    ("hu", "hoon"),
+    ("bohot", "bahut"),
+    ("bahot", "bahut"),
+    ("jyada", "zyada"),
+    ("thik", "theek"),
+    ("kyu", "kyun"),
+    ("acha", "accha"),
+    ("achha", "accha"),
+    ("aya", "aaya"),
+    ("aj", "aaj"),
+    ("hamein", "humein"),
+    ("tumhein", "tumhe"),
+    ("chalen", "chalein"),
+    ("pehle", "pahle"),
+    ("sham", "shaam"),
+];
+
+fn hinglish_canonical(word: &str) -> &str {
+    HINGLISH_VARIANTS
+        .iter()
+        .find(|(from, _)| *from == word)
+        .map_or(word, |(_, to)| to)
+}
+
+/// Word-level edit counts with Hinglish spelling variants treated as the same word.
+pub fn word_errors_hinglish(reference: &str, hypothesis: &str) -> EditCounts {
+    let r = normalise_for_scoring(reference);
+    let h = normalise_for_scoring(hypothesis);
+    let rw: Vec<&str> = r.split_whitespace().map(hinglish_canonical).collect();
+    let hw: Vec<&str> = h.split_whitespace().map(hinglish_canonical).collect();
+    align(&rw, &hw)
+}
+
 /// Character-level edit counts after normalisation (Unicode code points, single spaces kept).
 pub fn char_errors(reference: &str, hypothesis: &str) -> EditCounts {
     let r: Vec<char> = normalise_for_scoring(reference).chars().collect();
@@ -180,6 +234,25 @@ mod tests {
     #[test]
     fn empty_reference_has_no_rate() {
         assert_eq!(word_errors("", "anything").rate(), None);
+    }
+
+    #[test]
+    fn hinglish_variants_only_merge_spellings_of_one_word() {
+        let r = "Bhai woh video dekha kya, toh chalo.";
+        assert_eq!(
+            word_errors(r, "Bhai wo video dekha kya, to chalo.").errors(),
+            2
+        );
+        assert_eq!(
+            word_errors_hinglish(r, "Bhai wo video dekha kya, to chalo.").errors(),
+            0
+        );
+        // Different words stay different.
+        assert_eq!(
+            word_errors_hinglish("tumhare saath", "tumhe saath").errors(),
+            1
+        );
+        assert_eq!(word_errors_hinglish("main ghar", "mein ghar").errors(), 1);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use app_core::metrics::{char_errors, word_errors, EditCounts};
+use app_core::metrics::{char_errors, word_errors, word_errors_hinglish, EditCounts};
 use serde::Serialize;
 
 /// Parses "id<TAB>text" lines. Blank lines and lines starting with '#' are skipped.
@@ -28,6 +28,8 @@ pub fn parse_tsv(content: &str) -> Result<BTreeMap<String, String>, String> {
 pub struct UtteranceScore {
     pub id: String,
     pub wer: Option<f64>,
+    /// Word error rate with Hinglish spelling variants (wo/woh, to/toh...) counted as equal.
+    pub wer_hinglish_tolerant: Option<f64>,
     pub cer: Option<f64>,
     pub words: EditCounts,
     pub chars: EditCounts,
@@ -37,6 +39,8 @@ pub struct UtteranceScore {
 pub struct Report {
     /// Corpus-level rates: total errors / total reference tokens (not a mean of means).
     pub wer: Option<f64>,
+    /// Word error rate with Hinglish spelling variants (wo/woh, to/toh...) counted as equal.
+    pub wer_hinglish_tolerant: Option<f64>,
     pub cer: Option<f64>,
     pub words: EditCounts,
     pub chars: EditCounts,
@@ -52,6 +56,7 @@ pub fn score(
     hypotheses: &BTreeMap<String, String>,
 ) -> Report {
     let mut words = EditCounts::default();
+    let mut tolerant = EditCounts::default();
     let mut chars = EditCounts::default();
     let mut utterances = Vec::new();
     let mut missing = Vec::new();
@@ -67,10 +72,13 @@ pub fn score(
         let w = word_errors(reference, hypothesis);
         let c = char_errors(reference, hypothesis);
         words.add(&w);
+        let t = word_errors_hinglish(reference, hypothesis);
+        tolerant.add(&t);
         chars.add(&c);
         utterances.push(UtteranceScore {
             id: id.clone(),
             wer: w.rate(),
+            wer_hinglish_tolerant: t.rate(),
             cer: c.rate(),
             words: w,
             chars: c,
@@ -84,6 +92,7 @@ pub fn score(
 
     Report {
         wer: words.rate(),
+        wer_hinglish_tolerant: tolerant.rate(),
         cer: chars.rate(),
         words,
         chars,

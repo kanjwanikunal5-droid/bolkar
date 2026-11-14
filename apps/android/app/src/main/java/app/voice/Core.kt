@@ -39,6 +39,9 @@ object Core {
     /** The polished text, or "" when the answer is rejected. */
     @JvmStatic external fun acceptPolish(answer: String, source: String): String
     @JvmStatic external fun romanHinglishExample(): String
+
+    /** Offline Hinglish spelling rules (bahut, karunga, ...). */
+    @JvmStatic external fun hinglishSpelling(text: String): String
     @JvmStatic external fun recogniserHint(vocabulary: String): String
     @JvmStatic external fun defaultTerms(): String
     @JvmStatic external fun appName(): String

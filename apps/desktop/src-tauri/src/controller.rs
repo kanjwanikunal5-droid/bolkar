@@ -11,6 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use app_asr::{audio as asr_audio, Options, WhisperEngine};
+use app_core::command::{self, Command};
 use app_core::dictionary::{Dictionary, Term};
 use app_core::llm;
 use app_core::pipeline::{self, Level, Settings};
@@ -24,6 +25,10 @@ use crate::{db, models, providers, AppState};
 
 /// The AI clean-up must answer within this time, or the rules are used instead.
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
+/// A Command Mode edit may rewrite a whole paragraph; it gets longer.
+const AI_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+/// Shown on the pill while Command Mode listens.
+const COMMAND_HINT: &str = "Say what to do, then Alt+Shift+C";
 /// Cloud speech recognition normally answers in under half a second; after this, use the
 /// model on this computer instead.
 const CLOUD_ASR_TIMEOUT: Duration = Duration::from_secs(6);
@@ -45,6 +50,8 @@ pub enum Msg {
         path: PathBuf,
         insert: bool,
         delay_ms: u64,
+        /// Treat the recording as a Command Mode instruction for the selection in front.
+        command: bool,
         reply: Sender<Result<DictationResult, String>>,
     },
 }
@@ -65,6 +72,8 @@ struct Session {
     target: Option<Target>,
     started: Instant,
     hands_free: bool,
+    /// Command Mode: the selected text the spoken instruction applies to.
+    command: Option<String>,
 }
 
 struct Loaded {
@@ -219,9 +228,14 @@ impl Controller {
                     path,
                     insert,
                     delay_ms,
+                    command,
                     reply,
                 }) => {
-                    let result = self.run_file(&path, insert, delay_ms);
+                    let result = if command {
+                        self.run_command_file(&path)
+                    } else {
+                        self.run_file(&path, insert, delay_ms)
+                    };
                     let _ = reply.send(result);
                 }
             }
@@ -237,7 +251,8 @@ impl Controller {
                     s.hands_free = true;
                 }
             }
-            Action::PttStop | Action::HandsFreeStop => self.finish(),
+            Action::PttStop | Action::HandsFreeStop | Action::CommandStop => self.finish(),
+            Action::CommandStart => self.begin_command(),
             Action::Cancel => {
                 if self.session.take().is_some() {
                     self.recorder.cancel();
@@ -261,6 +276,14 @@ impl Controller {
                 };
                 let _ = self.app.emit("dictation-added", "");
                 self.message("info", label, None);
+            }
+            Action::OpenScratchpad => {
+                if let Some(w) = self.app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+                let _ = self.app.emit("open-scratchpad", ());
             }
             Action::FixLast => {
                 // Opens the app on the last dictation, ready to correct it.
@@ -297,6 +320,7 @@ impl Controller {
             target,
             started: Instant::now(),
             hands_free,
+            command: None,
         });
         self.pill(
             PillState {
@@ -331,6 +355,8 @@ impl Controller {
             state: "listening",
             message: if warn {
                 "Stopping at 20:00".into()
+            } else if session.command.is_some() {
+                COMMAND_HINT.into()
             } else {
                 String::new()
             },
@@ -354,6 +380,17 @@ impl Controller {
                 return;
             }
         };
+        if let Some(selection) = session.command {
+            match self.run_command(samples, session.target, &selection) {
+                Ok(r) => match &r.outcome {
+                    Some(o) if o.inserted() => self.message("done", "Done", hwnd),
+                    Some(o) => self.message("info", o.message(), hwnd),
+                    None => self.message("info", "Didn't hear an instruction", hwnd),
+                },
+                Err(e) => self.message("error", e, hwnd),
+            }
+            return;
+        }
         match self.process(samples, session.target, true) {
             Ok(result) => match &result.outcome {
                 None => self.message("info", "Didn't hear anything", hwnd),
@@ -453,9 +490,19 @@ impl Controller {
 
     /// Sends dictation text to the user's AI provider and logs the upload.
     fn ai_text(&self, system: &str, text: &str, purpose: &str) -> Result<String, String> {
-        let cfg = crate::ai_config(&self.state()).ok_or("AI clean-up is off")?;
         let user = serde_json::json!({ "text": text }).to_string();
-        let result = providers::chat(&cfg, system, &user, AI_TIMEOUT);
+        self.ai_raw(system, &user, purpose, AI_TIMEOUT)
+    }
+
+    fn ai_raw(
+        &self,
+        system: &str,
+        user: &str,
+        purpose: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        let cfg = crate::ai_config(&self.state()).ok_or("AI clean-up is off")?;
+        let result = providers::chat(&cfg, system, user, timeout);
         if let Ok(conn) = self.state().db.lock() {
             let outcome = result
                 .as_ref()
@@ -734,7 +781,9 @@ impl Controller {
         // the recogniser heard; only the text sent on to clean-up is polished.
         let mut to_clean = raw.clone();
         if hinglish_route && !raw.is_empty() && !llm::has_devanagari(&raw) {
-            match self.polish_hinglish(&raw) {
+            // Offline spelling table first (always on), then the AI polish when allowed.
+            to_clean = app_core::hinglish::normalise(&raw);
+            match self.polish_hinglish(&to_clean) {
                 Ok(p) => {
                     to_clean = p;
                     engine_label.push_str(" + Hinglish spelling (AI)");
@@ -903,6 +952,230 @@ impl Controller {
             (None, _) => self.message("info", "Nothing dictated yet", hwnd),
             (_, None) => self.message("info", "No window to paste into", hwnd),
         }
+    }
+
+    /// Alt+Shift+C: copy the selection of the window in front, then listen for an instruction.
+    fn begin_command(&mut self) {
+        if self.session.is_some() {
+            return;
+        }
+        let Some(target) = insert::target::foreground() else {
+            hotkey::force_idle();
+            return;
+        };
+        let hwnd = Some(target.hwnd);
+        let selection = match insert::copy_selection(&target) {
+            Ok(s) if !s.trim().is_empty() => s,
+            Ok(_) => {
+                hotkey::force_idle();
+                self.message(
+                    "info",
+                    "Select some text first, then press Alt+Shift+C",
+                    hwnd,
+                );
+                return;
+            }
+            Err(e) => {
+                hotkey::force_idle();
+                self.message("error", e, hwnd);
+                return;
+            }
+        };
+        if let Err(e) = self.recorder.start() {
+            hotkey::force_idle();
+            self.message("error", e, hwnd);
+            return;
+        }
+        self.session = Some(Session {
+            target: Some(target),
+            started: Instant::now(),
+            hands_free: true,
+            command: Some(selection),
+        });
+        self.pill(
+            PillState {
+                state: "listening",
+                message: COMMAND_HINT.into(),
+                hands_free: true,
+                ..Default::default()
+            },
+            hwnd,
+            None,
+        );
+    }
+
+    /// The spoken instruction, recognised on this computer (instructions are short; the
+    /// local model is fast and needs no consent). English or Hinglish as for dictation.
+    fn recognise_command(&mut self, mut samples: Vec<f32>) -> Result<String, String> {
+        if samples.len() < app_asr::SAMPLE_RATE as usize / 4 || !asr_audio::has_signal(&samples) {
+            return Ok(String::new());
+        }
+        let quiet = asr_audio::rms(&samples) < 0.01;
+        asr_audio::normalise_quiet(&mut samples, 0.05, 8.0);
+        self.ensure_engine()?;
+        let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+        let p = loaded
+            .engine
+            .language_probabilities(&samples, &["en", "hi"])
+            .unwrap_or_else(|_| vec![1.0, 0.0]);
+        let options = if app_asr::is_hinglish(p[0], p[1]) {
+            Options {
+                language: Some("hi".into()),
+                initial_prompt: Some(llm::ROMAN_HINGLISH_EXAMPLE.into()),
+                ..Default::default()
+            }
+        } else {
+            Options {
+                language: Some("en".into()),
+                ..Default::default()
+            }
+        };
+        let t = loaded.engine.transcribe(&samples, &options)?;
+        Ok(app_asr::guard::filter_text(&t.text, quiet)
+            .trim()
+            .to_string())
+    }
+
+    /// Applies a spoken instruction to `selection` and pastes the result over it.
+    fn run_command(
+        &mut self,
+        samples: Vec<f32>,
+        target: Option<Target>,
+        selection: &str,
+    ) -> Result<DictationResult, String> {
+        let hwnd = target.as_ref().map(|t| t.hwnd);
+        let audio_ms = samples.len() as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE);
+        self.pill(
+            PillState {
+                state: "transcribing",
+                message: "Understanding...".into(),
+                ..Default::default()
+            },
+            hwnd,
+            None,
+        );
+        let started = Instant::now();
+        let instruction = self.recognise_command(samples)?;
+        let transcribe_ms = started.elapsed().as_millis() as u64;
+        let id = uuid::Uuid::new_v4().to_string();
+        let process_name = target
+            .as_ref()
+            .map(|t| t.process.clone())
+            .unwrap_or_default();
+        let mut result = DictationResult {
+            id: id.clone(),
+            raw_text: instruction.clone(),
+            final_text: String::new(),
+            outcome: None,
+            audio_ms,
+            transcribe_ms,
+            engine: String::new(),
+            target_process: process_name.clone(),
+        };
+        if instruction.is_empty() {
+            return Ok(result);
+        }
+        let cmd = command::parse(&instruction);
+        let (edit, how) = match command::apply(&cmd, selection) {
+            Some(edit) => (edit, format!("Command (built in): {cmd:?}")),
+            None => {
+                self.pill(
+                    PillState {
+                        state: "polishing",
+                        message: "Editing...".into(),
+                        ..Default::default()
+                    },
+                    hwnd,
+                    None,
+                );
+                let answer = self
+                    .ai_raw(
+                        &command::command_prompt(),
+                        &command::command_request(&instruction, selection),
+                        "a Command Mode edit",
+                        AI_COMMAND_TIMEOUT,
+                    )
+                    .map_err(|e| {
+                        if e.contains("is off") {
+                            format!(
+                                "\"{instruction}\" needs AI clean-up (Settings). Without AI: bulleted or numbered list, all caps, lowercase, title case, clean up."
+                            )
+                        } else {
+                            e
+                        }
+                    })?;
+                let text = command::accept_ai_edit(&answer, &instruction, selection)
+                    .map_err(|why| format!("AI edit not used: {why}"))?;
+                // AI lists ("- a" / "1. a" lines) also get the HTML version for Word/Docs.
+                let lines: Vec<&str> = text.lines().collect();
+                let html = if lines.len() > 1 && lines.iter().all(|l| l.starts_with("- ")) {
+                    command::apply(&Command::BulletList, &text).and_then(|e| e.html)
+                } else if lines.len() > 1
+                    && lines
+                        .iter()
+                        .enumerate()
+                        .all(|(i, l)| l.starts_with(&format!("{}. ", i + 1)))
+                {
+                    command::apply(&Command::NumberedList, &text).and_then(|e| e.html)
+                } else {
+                    None
+                };
+                (command::Edit { text, html }, "Command (AI)".to_string())
+            }
+        };
+        let target = target.ok_or("No window to paste into")?;
+        let outcome = insert::insert_rich(&edit.text, edit.html.as_deref(), &target);
+        let record = db::Dictation {
+            id: id.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            app_process: process_name,
+            app_title: target.title.clone(),
+            app_category: format!(
+                "{:?}",
+                app_rules::rule_for(&target.process, &target.title).category
+            ),
+            language: self.state().setting("language"),
+            engine: how.clone(),
+            level: "COMMAND".into(),
+            raw_text: format!("Command: {instruction}\n\nSelection:\n{selection}"),
+            final_text: edit.text.clone(),
+            inserted: outcome.inserted(),
+            insert_method: outcome.method().to_string(),
+            duration_ms: audio_ms as i64,
+            audio_path: None,
+            word_count: edit.text.split_whitespace().count() as i64,
+            error: match &outcome {
+                Outcome::Failed { message } => Some(message.clone()),
+                _ => None,
+            },
+            cleanup: how.clone(),
+        };
+        if let Ok(conn) = self.state().db.lock() {
+            let _ = db::insert_dictation(&conn, &record);
+        }
+        let _ = self.app.emit("dictation-added", &record.id);
+        result.final_text = edit.text;
+        result.outcome = Some(outcome);
+        result.engine = how;
+        Ok(result)
+    }
+
+    /// Self-test: copy the selection of the window in front and apply the instruction
+    /// spoken in a WAV file.
+    fn run_command_file(&mut self, path: &std::path::Path) -> Result<DictationResult, String> {
+        let samples = asr_audio::read_wav_16k_mono(path)?;
+        let target = insert::target::foreground().ok_or("no window in front")?;
+        let selection = insert::copy_selection(&target)?;
+        if selection.trim().is_empty() {
+            return Err("nothing selected in the window in front".into());
+        }
+        let hwnd = Some(target.hwnd);
+        let result = self.run_command(samples, Some(target), &selection);
+        match &result {
+            Ok(r) => self.message("done", format!("Command: {}", r.raw_text), hwnd),
+            Err(e) => self.message("error", e.clone(), hwnd),
+        }
+        result
     }
 
     fn run_file(

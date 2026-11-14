@@ -75,6 +75,9 @@ impl Outcome {
 
 /// How long the target gets to read the clipboard before it is restored.
 const PASTE_SETTLE: Duration = Duration::from_millis(400);
+/// Word converts pasted HTML slowly and reads the clipboard late; restoring the old clipboard
+/// before it has read the list makes the paste fail silently (measured: 3 of 10 runs at 400 ms).
+const PASTE_SETTLE_RICH: Duration = Duration::from_millis(1500);
 
 fn copy_only(text: &str, reason: CopyReason) -> Outcome {
     match clipboard::write_text_private(text) {
@@ -85,6 +88,44 @@ fn copy_only(text: &str, reason: CopyReason) -> Outcome {
 
 /// Inserts `text` into `target`, which was captured when recording started.
 pub fn insert(text: &str, target: &Target) -> Outcome {
+    insert_rich(text, None, target)
+}
+
+/// Copies the selected text of `target` (which must be in front) and puts the user's
+/// clipboard back. `Ok("")` when nothing is selected.
+pub fn copy_selection(target: &Target) -> Result<String, String> {
+    keys::wait_modifiers_released(Duration::from_millis(1500));
+    if target::foreground_hwnd() != target.hwnd {
+        return Err("The window changed before the selection could be read.".into());
+    }
+    let snapshot = clipboard::snapshot()?;
+    let before = clipboard::sequence();
+    // An app that has only just come to the front may miss the first Ctrl+C: try twice.
+    for _ in 0..2 {
+        if target::foreground_hwnd() != target.hwnd {
+            break;
+        }
+        keys::send_copy()?;
+        // Wait for the app to put its copy on the clipboard.
+        let started = std::time::Instant::now();
+        while clipboard::sequence() == before && started.elapsed() < Duration::from_millis(700) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if clipboard::sequence() != before {
+            break;
+        }
+    }
+    let text = if clipboard::sequence() == before {
+        String::new() // nothing selected: the app did not copy anything
+    } else {
+        clipboard::read_text().unwrap_or_default()
+    };
+    let _ = clipboard::restore(&snapshot);
+    Ok(text.replace("\r\n", "\n"))
+}
+
+/// Inserts `text` (and, for apps that read it, `html`) into `target`.
+pub fn insert_rich(text: &str, html: Option<&str>, target: &Target) -> Outcome {
     if text.is_empty() {
         return Outcome::Failed {
             message: "Nothing to insert".into(),
@@ -114,7 +155,7 @@ pub fn insert(text: &str, target: &Target) -> Outcome {
             }
         }
     };
-    let seq = match clipboard::write_text_private(text) {
+    let seq = match clipboard::write_private(text, html) {
         Ok(seq) => seq,
         Err(_) => {
             return match keys::type_text(text) {
@@ -137,7 +178,11 @@ pub fn insert(text: &str, target: &Target) -> Outcome {
         };
     }
 
-    std::thread::sleep(PASTE_SETTLE);
+    std::thread::sleep(if html.is_some() {
+        PASTE_SETTLE_RICH
+    } else {
+        PASTE_SETTLE
+    });
     // Restore only if the clipboard is still exactly what we wrote. If the user or the
     // target changed it in the meantime, their content wins.
     let clipboard_restored = clipboard::sequence() == seq && clipboard::restore(&snapshot).is_ok();

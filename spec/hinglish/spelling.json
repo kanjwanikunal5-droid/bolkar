@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "Offline Hinglish spelling rules (app_core::hinglish::normalise). Applied only to text recognised as Hinglish. Cases marked must_not_change are sentences the rules must leave exactly as they are.",
+  "cases": [
+    { "id": "hs-001", "input": "Baut maza aaya wahan pe.", "expected": "Bahut maza aaya wahan pe." },
+    { "id": "hs-002", "input": "Mujhe bhai, wishwaaz tha.", "expected": "Mujhe bhai, vishwas tha." },
+    { "id": "hs-003", "input": "Main wahan pe jane ki try karun ga.", "expected": "Main wahan pe jane ki try karunga." },
+    { "id": "hs-004", "input": "Main baad mein aung ba, okay?", "expected": "Main baad mein aaunga, okay?" },
+    { "id": "hs-005", "input": "Pahle se mujhe pata tha.", "expected": "Pehle se mujhe pata tha." },
+    { "id": "hs-006", "input": "Maine iss pe zyaadha dhyan nahi diya.", "expected": "Maine iss pe zyada dhyan nahi diya." },
+    { "id": "hs-007", "input": "Bohot kaam hai kyonki exams hain.", "expected": "Bahut kaam hai kyunki exams hain." },
+    { "id": "hs-008", "input": "Tu bhi aa jayegi na? Main jaun gi.", "expected": "Tu bhi aa jayegi na? Main jaungi." },
+    { "id": "hs-009", "input": "Vahaan se yahaan tak aana hai.", "expected": "Wahan se yahan tak aana hai." },
+    { "id": "hs-010", "input": "Mujhe koi advice chahie.", "expected": "Mujhe koi advice chahiye." },
+    { "id": "hs-n01", "must_not_change": true, "input": "Main bhoot chill kar raha hoon.", "expected": "Main bhoot chill kar raha hoon." },
+    { "id": "hs-n02", "must_not_change": true, "input": "Please send the report on Monday.", "expected": "Please send the report on Monday." },
+    { "id": "hs-n03", "must_not_change": true, "input": "Turn on the garage lights at noon.", "expected": "Turn on the garage lights at noon." },
+    { "id": "hs-n04", "must_not_change": true, "input": "Kal milte hain, theek hai? Main try karunga.", "expected": "Kal milte hain, theek hai? Main try karunga." },
+    { "id": "hs-n05", "must_not_change": true, "input": "Report ready hai, main tujhe shaam tak bhej dunga.", "expected": "Report ready hai, main tujhe shaam tak bhej dunga." },
+    { "id": "hs-n06", "must_not_change": true, "input": "CMA ka result 15 June ko aayega.", "expected": "CMA ka result 15 June ko aayega." }
+  ]
+}

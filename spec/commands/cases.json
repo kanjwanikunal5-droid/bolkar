@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "description": "Command Mode golden cases (app_core::command). 'spoken' is the instruction, 'selection' the selected text. 'expected_command' is how the instruction is read; 'expected' is the offline result (absent for instructions that go to the AI).",
+  "cases": [
+    { "id": "cm-001", "spoken": "Make this a bulleted list.", "selection": "Check the invoice. Call the client. Send the report.", "expected_command": "bullet_list", "expected": "• Check the invoice.\n• Call the client.\n• Send the report." },
+    { "id": "cm-002", "spoken": "make it a numbered list", "selection": "Book the hall. Order food. Send invites.", "expected_command": "numbered_list", "expected": "1. Book the hall.\n2. Order food.\n3. Send invites." },
+    { "id": "cm-003", "spoken": "bullet points bana do", "selection": "We need three things: budget, timeline and team.", "expected_command": "bullet_list", "expected": "• Budget\n• Timeline\n• Team" },
+    { "id": "cm-004", "spoken": "number them", "selection": "- milk\n- eggs\n- bread", "expected_command": "numbered_list", "expected": "1. milk\n2. eggs\n3. bread" },
+    { "id": "cm-005", "spoken": "all caps", "selection": "urgent: reply today", "expected_command": "uppercase", "expected": "URGENT: REPLY TODAY" },
+    { "id": "cm-006", "spoken": "make it lowercase", "selection": "PLEASE CALL ME", "expected_command": "lowercase", "expected": "please call me" },
+    { "id": "cm-007", "spoken": "title case", "selection": "review of the EBITDA margin", "expected_command": "title_case", "expected": "Review of the EBITDA Margin" },
+    { "id": "cm-008", "spoken": "clean this up", "selection": "So um I think we should uh go.", "expected_command": "clean_up", "expected": "So I think we should go." },
+    { "id": "cm-009", "spoken": "make it one paragraph", "selection": "1. First point.\n2. Second point.", "expected_command": "one_paragraph", "expected": "First point. Second point." },
+    { "id": "cm-010", "spoken": "sentence case", "selection": "HELLO THERE. HOW ARE YOU?", "expected_command": "sentence_case", "expected": "Hello there. How are you?" },
+    { "id": "cm-n01", "spoken": "make it more formal", "selection": "hey can u send the file", "expected_command": "ai" },
+    { "id": "cm-n02", "spoken": "translate this to English", "selection": "Kal meeting chaar baje hai.", "expected_command": "ai" },
+    { "id": "cm-n03", "spoken": "make it shorter", "selection": "I wanted to let you know that the report will be a little late.", "expected_command": "ai" },
+    { "id": "cm-n04", "spoken": "fix the spelling of Rahul's name", "selection": "Rahool will join.", "expected_command": "ai" }
+  ]
+}

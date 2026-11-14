@@ -39,9 +39,10 @@ async function dictate(key: string, wav: Blob, mode: Mode): Promise<{ raw: strin
   let toClean = raw;
   const hinglish = mode === "hinglish" || (mode === "en-hinglish" && hadDevanagari);
   if (hinglish && raw && !core.has_devanagari(raw)) {
+    toClean = core.hinglish_spelling(raw);
     try {
-      const answer = await chat(key, core.polish_prompt(), JSON.stringify({ text: raw }), 4000);
-      const polished = core.accept_polish(answer, raw);
+      const answer = await chat(key, core.polish_prompt(), JSON.stringify({ text: toClean }), 4000);
+      const polished = core.accept_polish(answer, toClean);
       if (polished) {
         toClean = polished;
         how.push("Hinglish spelling");

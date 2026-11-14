@@ -1,11 +1,12 @@
-﻿import { listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Dictation, type Model, type ModelProgress, type Settings, type Status } from "./api";
 import { APP_NAME } from "./brand";
 import { MeetingsPage } from "./Meetings";
 import { AiSettings, DictionaryPage, FixBox, MicMeter, SnippetsPage, UploadsCard } from "./Pages";
+import { ScratchpadPage } from "./Scratchpad";
 
-type Page = "home" | "history" | "meetings" | "dictionary" | "snippets" | "settings";
+type Page = "home" | "history" | "scratchpad" | "meetings" | "dictionary" | "snippets" | "settings";
 
 const LANGUAGES: [string, string][] = [
   ["en-hinglish", "English + Hinglish (automatic, Hinglish in Roman letters)"],
@@ -186,6 +187,7 @@ export function App() {
   }, []);
 
   const [fixId, setFixId] = useState<string | null>(null);
+  const [scratchFocus, setScratchFocus] = useState(0);
 
   useEffect(() => {
     refresh();
@@ -198,9 +200,15 @@ export function App() {
         setFixId(id);
       });
     });
+    // Alt + Shift + N: open the scratchpad, cursor at the end.
+    const offScratch = listen("open-scratchpad", () => {
+      setPage("scratchpad");
+      setScratchFocus((n) => n + 1);
+    });
     return () => {
       void off.then((f) => f());
       void offFix.then((f) => f());
+      void offScratch.then((f) => f());
     };
   }, [refresh]);
 
@@ -222,6 +230,7 @@ export function App() {
   const pages: [Page, string][] = [
     ["home", "Home"],
     ["history", "Dictation history"],
+    ["scratchpad", "Scratchpad"],
     ["meetings", "Meeting notes"],
     ["dictionary", "Dictionary"],
     ["snippets", "Snippets"],
@@ -283,8 +292,9 @@ export function App() {
                 <strong>{status?.words_this_week ?? 0}</strong> words dictated in the last 7 days
               </span>
               <span className="dim">
-                Speech recognition: on this device{status?.gpu_build && settings.use_gpu === "true" ? " (graphics card)" : ""} Â·
-                audio never leaves this computer
+                {status?.cloud_speech
+                  ? "Speech recognition: Groq (cloud, your key) - audio is sent to Groq"
+                  : `Speech recognition: on this device${status?.gpu_build && settings.use_gpu === "true" ? " (graphics card)" : ""} - audio never leaves this computer`}
               </span>
             </div>
             <div className="card">
@@ -321,6 +331,9 @@ export function App() {
           </>
         )}
 
+        {page === "scratchpad" && settings.scratchpad !== undefined && (
+          <ScratchpadPage initial={settings.scratchpad} focusSignal={scratchFocus} />
+        )}
         {page === "meetings" && <MeetingsPage />}
         {page === "dictionary" && <DictionaryPage />}
         {page === "snippets" && <SnippetsPage />}

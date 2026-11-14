@@ -59,6 +59,23 @@ less reliable there.
 word; the offline route gets the meaning right but misspells more words (baut, karun ga).
 With AI clean-up on, Hinglish spellings are also tidied (bahut, karunga, vishwas).
 
+## Edit text by voice (Command Mode)
+
+1. Select some text in any app (Word, Gmail, Notepad...).
+2. Press `Alt` + `Shift` + `C`. The pill says "Say what to do".
+3. Say the instruction, then press `Alt` + `Shift` + `C` again (`Esc` cancels).
+
+Works without AI: "make this a bulleted list", "make it a numbered list", "all caps",
+"lowercase", "title case", "sentence case", "make it one paragraph", "clean this up" (also
+"bullet points bana do"). In Word and Google Docs lists become real lists. Anything else
+("make it more formal", "make it shorter", "translate to English") needs AI clean-up turned on.
+Undo with `Ctrl` + `Z` in the app, as usual.
+
+## Scratchpad
+
+Press `Alt` + `Shift` + `N` from anywhere: the app opens a notes page with the cursor ready.
+Hold `Ctrl` + `Win` and speak to fill it. It is saved on this computer as you type.
+
 ## Android keyboard (type by voice in WhatsApp, Gmail, any app)
 
 1. Download the APK from the project's GitHub page (Actions or Releases) and open it on the
