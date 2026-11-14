@@ -1,0 +1,81 @@
+name: Windows installer
+
+# Builds the Windows installer with graphics-card (Vulkan) speech recognition.
+# - Run by hand (Actions > Windows installer > Run workflow): the installer is kept as a
+#   workflow artifact for 30 days. Nothing is published.
+# - A version tag pushed by the owner (v0.2.0 ...): the installer is also attached to that
+#   GitHub Release, next to the Android APK (android.yml).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Short build path: the C++ speech engine build breaks past 260 characters.
+  CARGO_TARGET_DIR: C:\t
+
+jobs:
+  installer:
+    name: Build installer (GPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> C:\\t"
+      - name: Vulkan SDK (needed to build GPU speech recognition)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: latest
+          optional_components: ""
+          install_runtime: false
+          cache: true
+          stripdown: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The tag must match the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $conf = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ("v$($conf.version)" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} but app version $($conf.version)" }
+      - name: Build installer
+        working-directory: apps/desktop
+        run: pnpm tauri build
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item C:\t\release\bundle\nsis\*-setup.exe dist\
+          Get-ChildItem dist | ForEach-Object { "{0}  {1:N0} bytes  SHA-256 {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName).Hash }
+          Get-ChildItem dist\*.exe | ForEach-Object { "$((Get-FileHash $_.FullName).Hash.ToLower())  $($_.Name)" } | Set-Content dist\SHA256SUMS-windows.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
