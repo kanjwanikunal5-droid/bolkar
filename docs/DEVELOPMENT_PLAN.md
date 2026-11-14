@@ -11,7 +11,7 @@ anything not run is listed as "not run" in [STATUS.md](STATUS.md).
 | 3 | Meeting notes (desktop): two tracks, live transcript, My Thoughts, summary with evidence, exports | Scenario 2; 60-minute recording; evidence checks pass |
 | 4 | Web PWA on GitHub Pages | Public link works in Chrome and iPhone Safari |
 | 5 | Android keyboard + in-person recorder; APK on GitHub Releases | Dictate into WhatsApp, Gmail, Chrome on the phone |
-| 6 | Indic languages, Hinglish and Sindhi scripts, benchmarks on real recordings | Per-language results table from our own measurements |
+| 6 | English and Hinglish accuracy on the owner's real recordings (owner decision 14 Nov 2026: no other Indian languages for now) | Results table from our own measurements |
 | 7 | Command Mode, context awareness (opt-in, text only), scratchpad, file tagging | "make this a bulleted list" works in Word/Docs |
 | 8 | Installer, updater, signing application, landing page | Fresh Windows account installs and dictates in 3 minutes |
 | 9 | Hardening, failure tests, final report | Long-run and failure tests logged |

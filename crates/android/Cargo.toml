@@ -1,0 +1,17 @@
+[package]
+name = "app-android"
+description = "The shared clean-up pipeline for the Android keyboard (JNI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# The Android app loads it as libapp_android.so; the JVM unit tests load the host build.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+app-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+jni = { version = "0.21", default-features = false }

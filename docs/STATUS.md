@@ -1,6 +1,6 @@
-﻿# Status
+# Status
 
-Last updated: **13 November 2026**. Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **14 November 2026** (Hinglish on the owner's voice, Android keyboard: see the end). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -223,9 +223,72 @@ real path. Confirming a dictation in the real app was NOT possible: further outs
 processes were held (likely by the installed antivirus). AI clean-up consent must be given
 again in Settings for the real data folder (the Groq key itself is in Credential Manager).
 Future builders: install/copy for the owner only via a process outside the container.
+
+## 14 November 2026: Hinglish on the owner's own voice, Android keyboard (Stage 5)
+
+### Hinglish: what was measured on the owner's 5 WhatsApp voice notes
+Five real voice notes from the owner (Ogg/Opus, Hinglish with a lot of English, 30 to 103
+words each; kept out of git in `bench/my_recordings/owner`). There are **no reference transcripts
+yet**, so there is no word-error figure: the routes were compared by reading the output
+side by side. Errors named below are real examples from these recordings.
+
+| Route | Result on the 5 notes |
+|---|---|
+| Local Whisper, Hindi (Devanagari) -> AI script conversion (old main route) | Poor. One note came out as nonsense; others lost words. |
+| Local Whisper set to English | Translates the Hindi parts into English. Wrong. |
+| Local Whisper, Hindi + Roman Hinglish example prompt (new local route) | Readable Roman Hinglish, English phrases kept. Misspellings and mis-hearings: "baut", "draa karun ga" (try karunga), "jester" (just), "Mathiran", "dosed to ne" (doston ne). In 1 of 5 notes, part of the text still came out in Devanagari. |
+| ...plus AI Hinglish spelling polish (new) | Most of those fixed: bahut, try karunga, just, Matheran, doston ne, vishwas. One real mistake made by the AI: a garbled "2-3 akte baad" (hafte) became "ghante" in one run; the prompt now says to leave such words alone. Not re-measured after that prompt change. |
+| Groq whisper-large-v3 (cloud, `hi`) -> AI script conversion | Best by far: close to word-for-word on all 5 (e.g. "Main area mein nahi aa paunga", "almost do teen hafte baad hi mil paunga"). Groq answers in mixed Devanagari/Roman whatever the prompt, so the script conversion is required. Remaining slips: "Nikkil", "Mathiran", "raay karunga" (try karunga). |
+
+Plain English through Groq with language `hi`: 3 of 3 English meeting clips came back as
+exact English (checked because the Android keyboard uses `hi` in English + Hinglish mode).
+
+Changes made from these results:
+- Local Hinglish route: Whisper `hi` + a generic Roman Hinglish example
+  (`app_core::llm::ROMAN_HINGLISH_EXAMPLE`, shared by desktop, web and Android). The example
+  is everyday wording, not words from the test notes, so the comparison above is not tuned to
+  them; a first, more specific example was rejected for that reason.
+- Leftover Devanagari is converted by the AI (checked as before).
+- New AI Hinglish spelling polish (`spec/prompts/transliterate.md`, checked by
+  `llm::parse_polish`: same numbers, word count within 15%, at least 60% of words unchanged,
+  no Devanagari; otherwise the unpolished text is used). The raw transcript keeps what the
+  recogniser heard; only the text passed on to clean-up is polished.
+- Desktop with cloud recognition on: English vs Hinglish is now decided on the laptop first,
+  and Groq is asked for `hi` (then script conversion) or `en` accordingly.
+- Web app: Hinglish mode sends the Roman example and runs the spelling polish.
+NOT run: the new desktop build in the owner's installed app (needs a rebuild + real install);
+a scored word-error rate (needs the owner's corrected text for the 5 notes).
+
+### Checks run on 14 Nov 2026
+- `cargo fmt --all -- --check`: clean. `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: **124 passed, 0 failed, 1 ignored** (includes the new Hinglish
+  polish checks and the Android bridge tests on Windows).
+- Web app: WebAssembly core rebuilt, `pnpm --filter web build` (type-check + bundle) clean.
+
+### Stage 5 - Android keyboard (first version)
+`apps/android` (Kotlin, no extra libraries) + `crates/android` (the shared Rust core through
+JNI, so the same clean-up rules, AI checks and Hinglish prompts as desktop and web).
+- Keyboard: large microphone key (tap, speak, tap), space, delete (hold = word), enter,
+  language key (English + Hinglish / English / Hinglish), globe to go back to the usual keyboard.
+- Recognition: the phone's own recogniser (default, no key) or Groq Whisper with the owner's key
+  (separate consent for audio). Hinglish route: `hi` + Roman example -> script conversion ->
+  spelling polish -> clean-up, each AI answer checked by the Rust core.
+- Key stored encrypted with an Android Keystore AES key; audio kept in memory only.
+- Set-up screen in large text: turn keyboard on, allow microphone, engine, key, consents,
+  language, test box.
+- Build: `.github/workflows/android.yml` builds the Rust library for arm64, armv7 and x86_64
+  (cargo-ndk), runs the Rust bridge tests and the JVM unit tests (all golden fixtures through
+  JNI), builds the APK and keeps it as a workflow artifact; a `v*` tag attaches it to a Release.
+NOT run on this laptop (no Android SDK or JDK installed here; installing them needs the owner's
+OK): Gradle build, APK, the JNI unit tests. They run in GitHub Actions; see the result there.
+NOT run: the keyboard on a real phone (WhatsApp, Gmail, Chrome), the phone recogniser, the
+in-person recorder (not built yet).
+
 ## Measured accuracy per language
 
-**None yet.** No real recordings have been scored. No accuracy figure is shown anywhere in the app.
+**No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No
+accuracy figure is shown anywhere in the app. Only English and Hinglish are worked on, by the
+owner's decision (14 Nov 2026); no other Indian languages are being added or measured.
 
 ## Costs so far
 

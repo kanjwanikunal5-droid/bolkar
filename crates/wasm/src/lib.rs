@@ -93,6 +93,22 @@ pub fn accept_transliteration(answer: &str, source: &str) -> String {
     llm::parse_transliteration(answer, source).unwrap_or_default()
 }
 
+#[wasm_bindgen]
+pub fn polish_prompt() -> String {
+    llm::hinglish_polish_prompt()
+}
+
+/// Checks a Hinglish spelling polish. Returns the polished text or "" when rejected.
+#[wasm_bindgen]
+pub fn accept_polish(answer: &str, source: &str) -> String {
+    llm::parse_polish(answer, source).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn roman_hinglish_example() -> String {
+    llm::ROMAN_HINGLISH_EXAMPLE.to_string()
+}
+
 /// The Finance and Tech word packs, as JSON terms.
 #[wasm_bindgen]
 pub fn default_terms() -> String {

@@ -1,4 +1,4 @@
-﻿//! Transcribes every WAV in a folder with chosen settings and prints "id<TAB>text" lines,
+//! Transcribes every WAV in a folder with chosen settings and prints "id<TAB>text" lines,
 //! ready for `wer --ref refs.tsv --hyp out.tsv`.
 //!
 //!   batch <model.bin> <folder> [--lang hi] [--prompt "..."] [--beam 5] [--cpu]
@@ -28,12 +28,15 @@ fn main() {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .expect("folder")
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| x == "wav" || x == "ogg" || x == "opus")
+        })
         .collect();
     files.sort();
     let mut total_ms = 0;
     for f in &files {
-        let samples = audio::read_wav_16k_mono(f).expect("wav");
+        let samples = audio::read_audio_16k_mono(f).expect("audio");
         if args.iter().any(|a| a == "--detect") {
             let p = engine
                 .language_probabilities(&samples, &["en", "hi"])

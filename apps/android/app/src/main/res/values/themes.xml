@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark teal: 5.1:1 contrast on white (WCAG AA for normal text). -->
+    <color name="accent">#00796B</color>
+    <color name="accent_dark">#00594F</color>
+    <color name="ink">#1A1A1A</color>
+    <color name="paper">#FFFFFF</color>
+    <color name="key">#ECEFF1</color>
+    <color name="keyboard">#CFD8DC</color>
+    <color name="danger">#B71C1C</color>
+
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/accent</item>
+        <item name="android:colorPrimaryDark">@color/accent_dark</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:textColor">@color/ink</item>
+    </style>
+</resources>

@@ -91,4 +91,4 @@ jobs:
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz -C /tmp gitleaks
           /tmp/gitleaks detect --source . --redact --exit-code 1
 
-  # Android unit tests are added with the keyboard (Stage 5).
+  # Android keyboard build and unit tests: see android.yml.

@@ -1,4 +1,4 @@
-﻿//! Measures the AI clean-up path on the golden fixtures.
+//! Measures the AI clean-up path on the golden fixtures.
 //!
 //!   ai-eval <provider> [model]       e.g.  ai-eval groq llama-3.1-8b-instant
 //!
@@ -91,6 +91,30 @@ fn main() {
         }
         return;
     }
+    // --polish file.tsv: Hinglish spelling polish of each line.
+    if let Some(pos) = args.iter().position(|a| a == "--polish") {
+        let content = std::fs::read_to_string(&args[pos + 1]).expect("tsv");
+        for line in content.lines() {
+            let Some((id, text)) = line.trim_start_matches('\u{FEFF}').split_once('\t') else {
+                continue;
+            };
+            let user = serde_json::json!({ "text": text }).to_string();
+            match providers::chat(
+                &cfg,
+                &app_core::llm::hinglish_polish_prompt(),
+                &user,
+                Duration::from_secs(20),
+            ) {
+                Ok(a) => match app_core::llm::parse_polish(&a.content, text) {
+                    Ok(t) => println!("{id}\t{t}"),
+                    Err(e) => println!("{id}\t[kept original: {e}] {text}"),
+                },
+                Err(e) => eprintln!("{id}: {e}"),
+            }
+            std::thread::sleep(Duration::from_millis(6000));
+        }
+        return;
+    }
     // --translit file.tsv: converts each line's text to Roman Hinglish with the chat model.
     if let Some(pos) = args.iter().position(|a| a == "--translit") {
         let content = std::fs::read_to_string(&args[pos + 1]).expect("tsv");
@@ -119,15 +143,24 @@ fn main() {
             .get(pos + 2)
             .filter(|l| !l.is_empty())
             .map(String::as_str);
-        let prompt = args.get(pos + 3).map(String::as_str);
+        let prompt = args.get(pos + 3).map(|p| {
+            if p == "ROMAN" {
+                app_core::llm::ROMAN_HINGLISH_EXAMPLE
+            } else {
+                p.as_str()
+            }
+        });
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .expect("folder")
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|x| x == "wav" || x == "ogg" || x == "opus")
+            })
             .collect();
         files.sort();
         for f in files {
-            let samples = app_asr::audio::read_wav_16k_mono(&f).expect("wav");
+            let samples = app_asr::audio::read_audio_16k_mono(&f).expect("audio");
             match providers::transcribe(
                 &cfg,
                 providers::wav_bytes(&samples),

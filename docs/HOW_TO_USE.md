@@ -54,6 +54,25 @@ Hindi mixed with English and you get Hinglish in Roman letters, the way you type
 If you speak very quietly in a noisy place, choose the mode yourself: automatic detection is
 less reliable there.
 
+**Best Hinglish accuracy:** turn on AI clean-up and, in Settings, cloud speech recognition
+(Groq, your own free key). On your own voice notes that combination came out almost word for
+word; the offline route gets the meaning right but misspells more words (baut, karun ga).
+With AI clean-up on, Hinglish spellings are also tidied (bahut, karunga, vishwas).
+
+## Android keyboard (type by voice in WhatsApp, Gmail, any app)
+
+1. Download the APK from the project's GitHub page (Actions or Releases) and open it on the
+   phone. Android asks to allow installing from your browser or Files app: allow it once.
+2. Open the app and follow the steps on screen, top to bottom: turn the keyboard on, allow
+   the microphone, choose the speech engine, paste your Groq key (optional), pick the language.
+3. In any app, tap a text box, switch to the keyboard (globe key or the keyboard icon at the
+   bottom), tap the big microphone key, speak, and tap it again. The text is typed for you.
+
+Keys: globe = back to your normal keyboard, language key = English + Hinglish / English /
+Hinglish, space, delete (hold to delete a word), enter.
+For Hinglish in Roman letters choose **Groq** and tick **AI text steps**. The phone's own
+recogniser needs no key but writes Hindi in Hindi letters unless AI text steps are on.
+
 ## On your phone (web app)
 
 Open https://kanjwanikunal5-droid.github.io/bolkar/ in Chrome (Android) or Safari (iPhone).

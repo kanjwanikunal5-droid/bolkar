@@ -84,6 +84,46 @@ pub fn transliterate_prompt() -> String {
         .replace('\r', "")
 }
 
+/// Shown to Whisper (language "hi") so it writes Hinglish in Roman letters, WhatsApp style,
+/// and keeps English phrases in English. On the owner's own voice notes this beat Devanagari
+/// recognition plus AI conversion by a wide margin (14 Nov 2026, see docs/STATUS.md). Generic
+/// everyday wording on purpose: it teaches spelling, it must not leak words into the output.
+/// Shared by the desktop, web and Android apps.
+pub const ROMAN_HINGLISH_EXAMPLE: &str = "Haan bhai, sun na, kya chal raha hai? Main abhi kaam kar raha hoon. To be honest, mujhe bahut kaam hai, okay? Main baad mein call karunga. Tu tension mat le, sab theek ho jayega. Mujhe pata tha ki aisa hi hoga, isliye maine zyada socha nahi. Yaar, main sach bata raha hoon. Kal milte hain, phir plan banayenge.";
+
+/// The Hinglish polish prompt (spelling and obvious mis-hearings, Roman script).
+pub fn hinglish_polish_prompt() -> String {
+    let after = TRANSLIT_SPEC
+        .split_once("## Hinglish polish system prompt")
+        .map_or("", |(_, rest)| rest);
+    let body = after.split_once("```\n").map_or("", |(_, rest)| rest);
+    body.split_once("\n```")
+        .map_or("", |(b, _)| b)
+        .replace('\r', "")
+}
+
+/// Checks a Hinglish polish: same script, numbers unchanged, word count within 15%, and at
+/// least 60% of the words left exactly as they were (it may fix spellings, not rewrite).
+pub fn parse_polish(content: &str, source: &str) -> Result<String, String> {
+    let out = parse_transliteration(content, source)?;
+    let norm = |w: &str| {
+        w.trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase()
+    };
+    let src: Vec<String> = source.split_whitespace().map(norm).collect();
+    let dst: Vec<String> = out.split_whitespace().map(norm).collect();
+    let (a, b) = (src.len(), dst.len());
+    if b * 100 < a * 85 || b * 100 > a * 115 + 100 {
+        return Err(format!("word count changed too much ({a} -> {b})"));
+    }
+    let src_set: std::collections::HashSet<&String> = src.iter().collect();
+    let kept = dst.iter().filter(|w| src_set.contains(w)).count();
+    if kept * 100 < b * 60 {
+        return Err(format!("rewrote too much ({kept} of {b} words kept)"));
+    }
+    Ok(out)
+}
+
 pub fn has_devanagari(s: &str) -> bool {
     s.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
 }
@@ -705,6 +745,40 @@ mod tests {
         assert_eq!(
             check("Send it to Rahul, sorry, to Priya.", "Send it to Priya.").unwrap(),
             "Send it to Priya."
+        );
+    }
+
+    #[test]
+    fn hinglish_polish_checks() {
+        assert!(hinglish_polish_prompt().starts_with("You correct speech-recognition output"));
+        let src = "Main baut busy hoon, main draa karun ga kal 4 baje.";
+        assert_eq!(
+            parse_polish(
+                r#"{"text":"Main bahut busy hoon, main try karunga kal 4 baje."}"#,
+                src
+            )
+            .unwrap(),
+            "Main bahut busy hoon, main try karunga kal 4 baje."
+        );
+        assert!(
+            parse_polish(
+                r#"{"text":"I am very busy, I will try tomorrow at 4."}"#,
+                src
+            )
+            .is_err(),
+            "translated"
+        );
+        assert!(
+            parse_polish(
+                r#"{"text":"Main bahut busy hoon, main try karunga kal 5 baje."}"#,
+                src
+            )
+            .is_err(),
+            "number changed"
+        );
+        assert!(
+            parse_polish(r#"{"text":"Main busy hoon."}"#, src).is_err(),
+            "words dropped"
         );
     }
 

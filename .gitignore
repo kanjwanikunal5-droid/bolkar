@@ -38,3 +38,11 @@ apps/desktop/src-tauri/icons/ios/
 # Generated WebAssembly bindings (built by scripts/build-wasm.mjs)
 apps/web/src/wasm/
 apps/web/dist/
+
+# Android build output (APK built in GitHub Actions)
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/app/src/main/jniLibs/
+apps/android/local.properties
+

@@ -20,9 +20,10 @@ function vocabulary() {
 async function dictate(key: string, wav: Blob, mode: Mode): Promise<{ raw: string; text: string; how: string }> {
   const vocab = vocabulary();
   const language = mode === "en" ? "en" : mode === "hinglish" ? "hi" : null;
-  let raw = await transcribe(key, wav, language, mode === "hinglish" ? "" : core.recogniser_hint(vocab));
+  let raw = await transcribe(key, wav, language, mode === "hinglish" ? core.roman_hinglish_example() : core.recogniser_hint(vocab));
   const how: string[] = [SPEECH_MODEL];
-  if (mode !== "en" && core.has_devanagari(raw)) {
+  const hadDevanagari = core.has_devanagari(raw);
+  if (mode !== "en" && hadDevanagari) {
     try {
       const answer = await chat(key, core.transliterate_prompt(), JSON.stringify({ text: raw }), 4000);
       const roman = core.accept_transliteration(answer, raw);
@@ -34,12 +35,27 @@ async function dictate(key: string, wav: Blob, mode: Mode): Promise<{ raw: strin
       how.push(`Roman conversion failed: ${(e as Error).message}`);
     }
   }
-  const langTag = mode === "en" ? "en" : "hi-en";
-  let text = core.clean(raw, "LIGHT", true, vocab);
+  // Hinglish spelling (bahut, karunga...) and obvious mis-hearings; checked against rewrites.
+  let toClean = raw;
+  const hinglish = mode === "hinglish" || (mode === "en-hinglish" && hadDevanagari);
+  if (hinglish && raw && !core.has_devanagari(raw)) {
+    try {
+      const answer = await chat(key, core.polish_prompt(), JSON.stringify({ text: raw }), 4000);
+      const polished = core.accept_polish(answer, raw);
+      if (polished) {
+        toClean = polished;
+        how.push("Hinglish spelling");
+      } else how.push("spelling polish rejected");
+    } catch (e) {
+      how.push(`spelling polish failed: ${(e as Error).message}`);
+    }
+  }
+  const langTag = hinglish ? "hi-en" : "en";
+  let text = core.clean(toClean, "LIGHT", true, vocab);
   try {
-    const req = JSON.parse(core.cleanup_request(raw, "LIGHT", true, vocab, langTag)) as { system: string; user: string };
+    const req = JSON.parse(core.cleanup_request(toClean, "LIGHT", true, vocab, langTag)) as { system: string; user: string };
     const answer = await chat(key, req.system, req.user, 3000);
-    const verdict = JSON.parse(core.accept_cleanup(answer, raw, "LIGHT", true, vocab)) as { ok: boolean; text: string; why?: string };
+    const verdict = JSON.parse(core.accept_cleanup(answer, toClean, "LIGHT", true, vocab)) as { ok: boolean; text: string; why?: string };
     text = verdict.text;
     how.push(verdict.ok ? "AI clean-up" : `rules (AI answer rejected: ${verdict.why})`);
   } catch (e) {

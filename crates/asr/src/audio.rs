@@ -101,6 +101,72 @@ pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
     Ok(resample(&mono, spec.sample_rate, SAMPLE_RATE))
 }
 
+/// Reads WAV, Ogg/Opus (WhatsApp voice notes) and other Symphonia formats as 16 kHz mono.
+pub fn read_audio_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{CodecRegistry, DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::errors::Error as SymError;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext == "wav" {
+        return read_wav_16k_mono(path);
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(&ext);
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("{}: unsupported audio ({e})", path.display()))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or("no audio track")?;
+    let track_id = track.id;
+    let mut registry = CodecRegistry::new();
+    registry.register_all::<symphonia_adapter_libopus::OpusDecoder>();
+    symphonia::default::register_enabled_codecs(&mut registry);
+    let mut decoder = registry
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("cannot decode: {e}"))?;
+    let mut rate = track.codec_params.sample_rate.unwrap_or(48_000);
+    let mut mono = Vec::new();
+    // An error from next_packet is the end of the stream.
+    while let Ok(packet) = format.next_packet() {
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                let spec = *buf.spec();
+                rate = spec.rate;
+                let channels = spec.channels.count();
+                let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+                sb.copy_interleaved_ref(buf);
+                mono.extend(to_mono(sb.samples(), channels));
+            }
+            Err(SymError::DecodeError(_)) => continue,
+            Err(e) => return Err(format!("decode failed: {e}")),
+        }
+    }
+    Ok(resample(&mono, rate, SAMPLE_RATE))
+}
+
 /// Writes 16 kHz mono f32 audio as a 16-bit WAV file.
 pub fn write_wav_16k_mono(path: &Path, samples: &[f32]) -> Result<(), String> {
     let spec = hound::WavSpec {
