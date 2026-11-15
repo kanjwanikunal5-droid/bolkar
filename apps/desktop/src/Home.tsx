@@ -1,102 +1,261 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type AiStatus, type Dictation, type Insights, type Settings, type Status } from "./api";
 import { Icon } from "./icons";
+import { ChatArt, CommandArt, StyleArt } from "./Illustrations";
 import { CountUp, EmptyState, MicLevel, ProgressBar, appName, dayLabel, greeting, timeOf, useToast } from "./ui";
 
 export type Go = (page: string, section?: string) => void;
 
-/** Decorative sound waves for the hero. */
-function Waves() {
-  const bars = [18, 34, 58, 88, 64, 110, 76, 130, 92, 60, 104, 70, 44, 82, 52, 30, 20];
+/* ---------- Greeting row with stat pills ---------- */
+
+function Greeting({ name, insights }: { name: string; insights: Insights | null }) {
+  const streak = insights?.current_streak ?? 0;
   return (
-    <svg className="waves" width="360" height="160" viewBox="0 0 360 160" aria-hidden="true">
-      {bars.map((h, i) => (
-        <rect key={i} x={i * 21} y={80 - h / 2} width="10" height={h} rx="5" fill="#fff" />
-      ))}
-    </svg>
+    <div className="greet">
+      <div>
+        <h1>
+          {greeting()}
+          {name ? `, ${name}` : ""}
+        </h1>
+        <p className="dim">
+          Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> and speak into any app.
+        </p>
+      </div>
+      <div className="pills" aria-label="Your numbers">
+        <span className="pill-stat" title="Days in a row with at least one dictation">
+          <span className="pill-ico amber">
+            <Icon.Flame size={15} />
+          </span>
+          {streak > 0 ? `${streak} day${streak === 1 ? "" : "s"}` : "No streak yet"}
+        </span>
+        <span className="pill-stat" title="Words dictated in the last 7 days">
+          <span className="pill-ico">
+            <Icon.Words size={15} />
+          </span>
+          <CountUp value={insights?.words_this_week ?? 0} /> words
+        </span>
+        <span className="pill-stat" title="Your speaking speed while dictating">
+          <span className="pill-ico">
+            <Icon.Gauge size={15} />
+          </span>
+          {insights?.speaking_wpm ? (
+            <>
+              <CountUp value={Math.round(insights.speaking_wpm)} /> WPM
+            </>
+          ) : (
+            "– WPM"
+          )}
+        </span>
+      </div>
+    </div>
   );
 }
 
-function Hero({ name, insights }: { name: string; insights: Insights | null }) {
-  const streak = insights?.current_streak ?? 0;
+/* ---------- Daily goal ---------- */
+
+function Confetti() {
+  const colors = ["#22b3a5", "#f6a623", "#6366f1", "#ef4444", "#5bdacd"];
   return (
-    <section className="hero" aria-label="Welcome">
-      <Waves />
-      <h1>
-        {greeting()}
-        {name ? `, ${name}` : ""}
-      </h1>
-      <p>
-        Hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> and speak into any app. Let go, and it types.
-      </p>
-      <div className="chips">
-        <span className="chip" title="Days in a row with at least one dictation">
-          <Icon.Flame size={16} />
-          {streak > 0 ? `${streak}-day streak` : "Start a streak today"}
-        </span>
-        <span className="chip">
-          <Icon.Words size={16} />
-          <CountUp value={insights?.words_this_week ?? 0} /> words this week
-        </span>
-        {insights?.speaking_wpm != null && (
-          <span className="chip" title="Your speaking speed while dictating">
-            <Icon.Gauge size={16} />
-            <CountUp value={Math.round(insights.speaking_wpm)} /> words per minute
+    <span className="confetti" aria-hidden="true">
+      {Array.from({ length: 28 }, (_, i) => (
+        <i
+          key={i}
+          style={{
+            left: `${(i * 37) % 100}%`,
+            background: colors[i % colors.length],
+            animationDelay: `${(i % 7) * 60}ms`,
+            transform: `rotate(${i * 29}deg)`,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function DailyGoal({ insights, goal, go }: { insights: Insights | null; goal: number; go: Go }) {
+  const today = insights?.words_today ?? 0;
+  const done = today >= goal;
+  const [celebrate, setCelebrate] = useState(false);
+  useEffect(() => {
+    if (!done) return;
+    const key = `goal-celebrated-${new Date().toDateString()}`;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, "1");
+    } catch {
+      /* no storage: celebrate anyway */
+    }
+    setCelebrate(true);
+    const t = setTimeout(() => setCelebrate(false), 2600);
+    return () => clearTimeout(t);
+  }, [done]);
+  return (
+    <section className={`goal card ${done ? "done" : ""}`} aria-label="Daily goal">
+      {celebrate && <Confetti />}
+      <div className="goal-body">
+        <h2>{done ? "Goal reached for today" : `${goal} words a day`}</h2>
+        <p className="dim">
+          {done
+            ? `You dictated ${today.toLocaleString()} words today. Keep the streak going tomorrow.`
+            : today === 0
+              ? "Speak your first words today to start."
+              : `${(goal - today).toLocaleString()} words to go. Every dictation counts.`}
+        </p>
+        <div className="goal-bar">
+          <ProgressBar value={Math.min(today, goal)} max={goal} />
+          <span className="goal-end" aria-hidden="true">
+            {done ? "🏆" : "🎯"}
           </span>
+        </div>
+        <span className="goal-count">
+          {Math.min(today, goal).toLocaleString()}/{goal.toLocaleString()} words
+        </span>
+      </div>
+      <button className="goal-tile" onClick={() => go("insights")} aria-label="Open Insights" title="Your Insights">
+        <Icon.Logo size={34} />
+      </button>
+    </section>
+  );
+}
+
+/* ---------- Feature banner (rotating) ---------- */
+
+interface Slide {
+  title: JSX.Element;
+  text: string;
+  cta: string;
+  art: JSX.Element;
+  go: () => void;
+}
+
+function Banner({ go }: { go: Go }) {
+  const slides: Slide[] = [
+    {
+      title: (
+        <>
+          Speak Hinglish, <em>type</em> it like WhatsApp
+        </>
+      ),
+      text: "English or Hinglish, decided for every sentence. Hinglish comes out in Roman letters, spelled the way you text.",
+      cta: "Try it now",
+      art: <ChatArt />,
+      go: () => go("guide"),
+    },
+    {
+      title: (
+        <>
+          Edit by voice, <em>anywhere</em>
+        </>
+      ),
+      text: "Select text, press Alt + Shift + C and say “make this a bulleted list”. Word and Google Docs get a real list.",
+      cta: "See how",
+      art: <CommandArt />,
+      go: () => go("guide"),
+    },
+    {
+      title: (
+        <>
+          A style for <em>every</em> app
+        </>
+      ),
+      text: "Casual in WhatsApp, formal in email, clear everywhere else. Choose once; it is used every time.",
+      cta: "Choose styles",
+      art: <StyleArt />,
+      go: () => go("style"),
+    },
+  ];
+  const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (paused || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setInterval(() => setI((n) => (n + 1) % slides.length), 7000);
+    return () => clearInterval(t);
+  }, [paused, slides.length]);
+  const s = slides[i];
+  return (
+    <section
+      className="banner-hero"
+      aria-roledescription="carousel"
+      aria-label="What you can do"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+    >
+      <div className="banner-copy" key={i}>
+        <h2>{s.title}</h2>
+        <p>{s.text}</p>
+        <button className="btn on-hero" onClick={s.go}>
+          {s.cta} <Icon.Chevron size={15} />
+        </button>
+      </div>
+      <div className="banner-art" key={`a${i}`}>
+        {s.art}
+      </div>
+      <div className="banner-dots" role="tablist" aria-label="Choose a slide">
+        {slides.map((_, n) => (
+          <button key={n} role="tab" aria-selected={n === i} aria-label={`Slide ${n + 1}`} onClick={() => setI(n)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Today ---------- */
+
+function Recent({ dictations, go }: { dictations: Dictation[]; go: Go }) {
+  const toast = useToast();
+  const items = dictations.filter((d) => d.final_text).slice(0, 8);
+  return (
+    <section>
+      <div className="section-head">
+        <span className="day-head" style={{ margin: 0 }}>
+          Recent dictations
+        </span>
+        <button className="btn ghost small" onClick={() => go("history")}>
+          See all <Icon.Chevron size={14} />
+        </button>
+      </div>
+      <div className="card">
+        {items.length === 0 ? (
+          <EmptyState icon={<Icon.Mic size={36} />} title="Nothing dictated yet">
+            Click into any text box, hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> and say a sentence. It will appear here.
+          </EmptyState>
+        ) : (
+          items.map((d, n) => {
+            const showDay = n === 0 || dayLabel(d.created_at) !== dayLabel(items[n - 1].created_at);
+            return (
+              <div key={d.id}>
+                {showDay && <div className="day-head">{dayLabel(d.created_at)}</div>}
+                <div className="timeline-item">
+                  <span className="time">{timeOf(d.created_at)}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <p className="text">{d.final_text}</p>
+                    <div className="meta">
+                      {appName(d.app_process) || "No app"} · {d.word_count} words
+                      {d.level === "COMMAND" && (
+                        <span className="badge accent" style={{ marginLeft: "0.4rem" }}>
+                          Command
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="actions row" style={{ gap: "0.2rem" }}>
+                    <button className="btn ghost small" aria-label="Copy" title="Copy" onClick={() => void api.copy(d.final_text).then(() => toast("Copied"))}>
+                      <Icon.Copy size={16} />
+                    </button>
+                  </span>
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
     </section>
   );
 }
 
-function Recent({ dictations, go }: { dictations: Dictation[]; go: Go }) {
-  const toast = useToast();
-  const items = dictations.filter((d) => d.final_text).slice(0, 6);
-  return (
-    <div className="card">
-      <div className="card-title">
-        <h2>Recent</h2>
-        <button className="btn ghost small" onClick={() => go("history")}>
-          See all <Icon.Chevron size={14} />
-        </button>
-      </div>
-      {items.length === 0 ? (
-        <EmptyState icon={<Icon.Mic size={36} />} title="Nothing dictated yet">
-          Click into any text box, hold <kbd>Ctrl</kbd> + <kbd>Win</kbd> and say a sentence. It will appear here.
-        </EmptyState>
-      ) : (
-        items.map((d, i) => {
-          const showDay = i === 0 || dayLabel(d.created_at) !== dayLabel(items[i - 1].created_at);
-          return (
-            <div key={d.id}>
-              {showDay && <div className="day-head">{dayLabel(d.created_at)}</div>}
-              <div className="timeline-item">
-                <span className="time">{timeOf(d.created_at)}</span>
-                <div style={{ minWidth: 0 }}>
-                  <p className="text">{d.final_text}</p>
-                  <div className="meta">
-                    {appName(d.app_process) || "No app"} · {d.word_count} words
-                    {d.level === "COMMAND" && <span className="badge accent" style={{ marginLeft: "0.4rem" }}>Command</span>}
-                  </div>
-                </div>
-                <span className="actions row" style={{ gap: "0.2rem" }}>
-                  <button
-                    className="btn ghost small"
-                    aria-label="Copy"
-                    title="Copy"
-                    onClick={() => void api.copy(d.final_text).then(() => toast("Copied"))}
-                  >
-                    <Icon.Copy size={16} />
-                  </button>
-                </span>
-              </div>
-            </div>
-          );
-        })
-      )}
-    </div>
-  );
-}
+/* ---------- Side cards ---------- */
 
 interface Step {
   done: boolean;
@@ -149,7 +308,7 @@ function TryIt() {
     <div className="card">
       <div className="card-title">
         <h2>Try it here</h2>
-        <MicLevel />
+        <MicLevel bars={10} />
       </div>
       <textarea
         className="practice"
@@ -165,7 +324,8 @@ function TryIt() {
 function SetupCard({ status, ai, settings, go }: { status: Status | null; ai: AiStatus | null; settings: Settings; go: Go }) {
   const lang: Record<string, string> = { "en-hinglish": "English + Hinglish", en: "English", hinglish: "Hinglish" };
   const rows: [string, string, boolean, string][] = [
-    ["Speech recognition", status?.cloud_speech ? "Groq Whisper (cloud)" : "On this computer", true, "speech"],
+    ["Speech recognition", status?.cloud_speech ? "Groq Whisper (cloud)" : "On this computer", true, "groq"],
+    ["Graphics card", status?.gpu_on ? "On (fast)" : status?.gpu_present ? "Off: slow" : "Not available", !!status?.gpu_on || !status?.gpu_present, "speech"],
     ["AI clean-up", ai?.active ? "On" : "Off", ai?.active ?? false, "groq"],
     ["Language", lang[settings.language ?? ""] ?? settings.language ?? "", true, "speech"],
   ];
@@ -173,9 +333,6 @@ function SetupCard({ status, ai, settings, go }: { status: Status | null; ai: Ai
     <div className="card">
       <div className="card-title">
         <h2>Your setup</h2>
-        <button className="btn ghost small" onClick={() => go("settings", "groq")}>
-          Change
-        </button>
       </div>
       {rows.map(([k, v, on, section]) => (
         <button key={k} className="check-item" onClick={() => go("settings", section)}>
@@ -210,47 +367,28 @@ export function HomePage({
   ai: AiStatus | null;
   go: Go;
 }) {
+  const goal = Math.max(10, Number(settings.daily_goal) || 100);
   const steps: Step[] = [
-    {
-      done: !!status?.model_installed,
-      label: "Install a speech model",
-      hint: "One download, then dictation works offline.",
-      go: () => go("settings", "speech"),
-    },
-    {
-      done: !!ai?.groq_key_hint && !!ai?.active,
-      label: "Connect Groq for the best accuracy",
-      hint: "Free key. Best measured English and Hinglish.",
-      go: () => go("settings", "groq"),
-    },
-    {
-      done: (insights?.total_dictations ?? 0) > 0,
-      label: "Dictate your first sentence",
-      hint: "Hold Ctrl + Win in any app and speak.",
-      go: () => go("guide"),
-    },
-    {
-      done: (insights?.commands ?? 0) > 0,
-      label: "Edit text by voice",
-      hint: "Select text, press Alt + Shift + C, say “make this a bulleted list”.",
-      go: () => go("guide"),
-    },
-    {
-      done: (insights?.your_words ?? 0) + (insights?.learned_words ?? 0) > 0,
-      label: "Teach it a word",
-      hint: "Names and terms you use, written your way.",
-      go: () => go("dictionary"),
-    },
-    {
-      done: !!settings.scratchpad,
-      label: "Jot something in the Scratchpad",
-      hint: "Alt + Shift + N from anywhere.",
-      go: () => go("scratchpad"),
-    },
+    { done: !!status?.model_installed, label: "Install a speech model", hint: "One download, then it also works offline.", go: () => go("settings", "speech") },
+    { done: !!ai?.groq_key_hint && !!ai?.active, label: "Connect Groq for the best accuracy", hint: "Free key. Best measured English and Hinglish.", go: () => go("settings", "groq") },
+    { done: (insights?.total_dictations ?? 0) > 0, label: "Dictate your first sentence", hint: "Hold Ctrl + Win in any app and speak.", go: () => go("guide") },
+    { done: (insights?.commands ?? 0) > 0, label: "Edit text by voice", hint: "Select text, Alt + Shift + C, “make this a bulleted list”.", go: () => go("guide") },
+    { done: (insights?.your_words ?? 0) + (insights?.learned_words ?? 0) > 0, label: "Teach it a word", hint: "Names and terms you use, written your way.", go: () => go("dictionary") },
+    { done: !!settings.scratchpad, label: "Jot something in the Scratchpad", hint: "Alt + Shift + N from anywhere.", go: () => go("scratchpad") },
   ];
   return (
     <div className="page">
-      <Hero name={settings.user_name ?? ""} insights={insights} />
+      <Greeting name={settings.user_name ?? ""} insights={insights} />
+      {status?.gpu_present && !status.gpu_on && (
+        <div className="banner" role="alert">
+          <Icon.Info size={18} /> The graphics card is switched off, so speech recognition on this computer is very slow.
+          <button className="btn small primary" onClick={() => go("settings", "speech")}>
+            Fix it
+          </button>
+        </div>
+      )}
+      <DailyGoal insights={insights} goal={goal} go={go} />
+      <Banner go={go} />
       <div className="grid home">
         <Recent dictations={dictations} go={go} />
         <div>

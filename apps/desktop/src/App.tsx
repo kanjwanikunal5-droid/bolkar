@@ -11,9 +11,10 @@ import { MeetingsPage } from "./Meetings";
 import { DictionaryPage, SnippetsPage } from "./Pages";
 import { ScratchpadPage } from "./Scratchpad";
 import { SettingsPage } from "./SettingsPage";
+import { StylePage } from "./Style";
 import { ToastProvider, applyTheme, useTheme, useToast, type ThemeChoice } from "./ui";
 
-type Page = "home" | "insights" | "history" | "scratchpad" | "meetings" | "dictionary" | "snippets" | "guide" | "settings";
+type Page = "home" | "insights" | "history" | "scratchpad" | "meetings" | "dictionary" | "snippets" | "style" | "guide" | "settings";
 
 const NAV: { group: string; items: [Page, string, JSX.Element][] }[] = [
   {
@@ -36,6 +37,7 @@ const NAV: { group: string; items: [Page, string, JSX.Element][] }[] = [
     items: [
       ["dictionary", "Dictionary", <Icon.Book />],
       ["snippets", "Snippets", <Icon.Quote />],
+      ["style", "Style", <Icon.Pen />],
     ],
   },
 ];
@@ -228,10 +230,16 @@ function Shell() {
             onClick={() => go("settings", status?.model_installed ? "groq" : "speech")}
             title="Speech recognition"
           >
-            <span className={`dot ${status?.hook_error || !status?.model_installed ? "warn" : "on"}`} />
+            <span className={`dot ${status?.hook_error || !status?.model_installed || (status?.gpu_present && !status?.gpu_on) ? "warn" : "on"}`} />
             <span>
               <strong style={{ color: "var(--text)", display: "block" }}>
-                {status?.hook_error ? "Shortcuts off" : !status?.model_installed ? "Setup needed" : "Ready to dictate"}
+                {status?.hook_error
+                  ? "Shortcuts off"
+                  : !status?.model_installed
+                    ? "Setup needed"
+                    : status?.gpu_present && !status?.gpu_on
+                      ? "Slow: graphics card off"
+                      : "Ready to dictate"}
               </strong>
               {status?.cloud_speech ? "Groq Whisper" : "On this computer"}
               {ai?.active ? " · AI clean-up" : ""}
@@ -306,6 +314,7 @@ function Shell() {
         )}
         {page === "dictionary" && <DictionaryPage />}
         {page === "snippets" && <SnippetsPage />}
+        {page === "style" && <StylePage settings={settings} ai={ai} set={set} go={go} />}
         {page === "guide" && <GuidePage />}
         {page === "settings" && (
           <SettingsPage settings={settings} status={status} ai={ai} section={section} setSection={setSection} set={set} refreshAi={refreshAi} />

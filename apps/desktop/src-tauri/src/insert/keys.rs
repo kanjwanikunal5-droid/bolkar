@@ -35,7 +35,7 @@ fn key(vk: u16, up: bool) -> INPUT {
                 wScan: 0,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: crate::hotkey::OWN_KEY_MARK,
             },
         },
     }
@@ -54,7 +54,7 @@ fn unicode(unit: u16, up: bool) -> INPUT {
                 wScan: unit,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: crate::hotkey::OWN_KEY_MARK,
             },
         },
     }

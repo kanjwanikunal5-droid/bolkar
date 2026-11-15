@@ -492,6 +492,46 @@ every visit (a passphrase stays available for shared devices).
   owner's key (about 8 small requests). Test runs now never apply the Groq default.
 - NOT run: clicking through the new Settings in the installed app (the owner was using the
   laptop), the Android keyboard (no visual changes this round), Command Mode re-test.
+## 15 November 2026: version 0.3.0 - dictation fix, new Home, Style, better dark theme
+
+### "Dictation does not work at all" - found and fixed
+- Owner's log: last dictation 14 Nov 16:30 IST (0.1.0); after 0.2.0 started (01:10) not one
+  dictation was logged. His settings: model **Large v3** (picked automatically by 0.2.0) and
+  **"Use the graphics card" off** (it was on earlier the same day: the log shows "(GPU)").
+- Reproduced with a copy of his database and the same models in the real app: one 4 s English
+  clip was still unfinished after 150 s, with the app using about 5.6 processor cores. Cause:
+  Large v3 running on the processor (start-up warm-up plus the English/Hinglish check take
+  minutes), so key presses waited behind it and nothing appeared to happen.
+- Fixes: (1) once, the graphics card is switched back on when one exists (logged); (2) the big
+  models are never picked automatically without a graphics card; (3) the warm-up only runs on
+  the graphics card; (4) with Groq on and no graphics card, the slow local language check is
+  skipped (Groq detects the language); (5) Home, the sidebar and Settings warn when the
+  graphics card is off.
+- After the fix, same copy of his settings, real app: English 0.59 s and Hinglish 0.82 s
+  recognition; on the 0.3.0 installer build 4 more clips (2 English exactly right, 2 Hinglish
+  with synthetic-voice errors) in 0.5-2.2 s. Failure tests: all 6 pass.
+- Keyboard hook hardened: time-critical thread priority, no disk writes in the hook, and the
+  hook is re-attached every 20 s while no shortcut key is held (Windows silently removes a hook
+  that answers too slowly, e.g. when the processor is saturated).
+- NOT verified: a real Ctrl+Win press. Key presses sent by software from the Claude sandbox
+  do not reach the app's hook, and a run started outside the sandbox (WMI) received only some
+  key releases. `scripts/selftest-hotkey.ps1` (test-only switch APP_TEST_INJECTED_KEYS, own
+  data folder, never types) can be run by the owner from a normal PowerShell window.
+- Test runs with a trace (APP_TEST_LOG) never type into any window.
+
+### Design and features
+- **Home**: greeting with streak / words / WPM pills; **daily goal** challenge (default 100
+  words, set in Settings) with progress and a celebration when reached; rotating **banner** with
+  three original illustrations drawn for this app (Hinglish chat, edit by voice, styles; no
+  photos or third-party artwork), each with a button; recent dictations, checklist, practice
+  box, setup card (now incl. graphics card).
+- **Style** page: per kind of app (personal messages, email, documents, everything else) choose
+  Casual / Clear / Formal; the AI clean-up uses it (`llm::build_cleanup_styled`, unit test).
+  Defaults: casual chat, formal email, clear elsewhere.
+- **Sounds**: soft start / done / error cues (Web Audio, no files), switchable.
+- **Dark theme** reworked: layered surfaces, softer borders, card highlight, richer gradients.
+- Checks: fmt and clippy clean; `cargo test --workspace` **142 passed, 0 failed**; UI builds;
+  Home and Style looked at in both themes (browser pane, development sample data).
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

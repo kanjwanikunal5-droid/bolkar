@@ -48,6 +48,18 @@ function General({ settings, set }: { settings: Settings; set: Set }) {
           <option value="150">Very large (150%)</option>
         </select>
       </SettingRow>
+      <SettingRow title="Daily goal" help="Words per day for the challenge on Home.">
+        <select aria-label="Daily goal" value={settings.daily_goal ?? "100"} onChange={(e) => set("daily_goal", e.target.value, "Daily goal saved")}>
+          {["50", "100", "200", "300", "500", "1000"].map((n) => (
+            <option key={n} value={n}>
+              {n} words
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+      <SettingRow title="Sounds" help="A soft sound when listening starts and when your text is typed.">
+        <Switch label="Sounds" checked={settings.sounds !== "off"} onChange={(on) => set("sounds", on ? "on" : "off", on ? "Sounds on" : "Sounds off")} />
+      </SettingRow>
       <SettingRow title="Your name" help="Only used to greet you on Home. Stays on this computer.">
         <input
           type="text"
@@ -176,7 +188,14 @@ function Speech({ settings, set, status }: { settings: Settings; set: Set; statu
           <Switch label="Instant start" checked={settings.keep_mic_open === "true"} onChange={(on) => set("keep_mic_open", String(on), on ? "Instant start on" : "Instant start off")} />
         </SettingRow>
         {status?.gpu_build && (
-          <SettingRow title="Use the graphics card" help="Much faster speech recognition on this computer.">
+          <SettingRow
+            title="Use the graphics card"
+            help={
+              settings.use_gpu === "true"
+                ? "Much faster speech recognition on this computer."
+                : "OFF: speech recognition on this computer is many times slower; with a large model a dictation can take minutes. Turn it on."
+            }
+          >
             <Switch label="Use the graphics card" checked={settings.use_gpu === "true"} onChange={(on) => set("use_gpu", String(on), on ? "Graphics card on" : "Graphics card off")} />
           </SettingRow>
         )}

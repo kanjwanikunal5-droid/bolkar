@@ -58,6 +58,27 @@ impl AppCategory {
     }
 }
 
+/// Writing styles the user can choose per kind of app (Style page). Own wording.
+pub const STYLES: &[(&str, &str)] = &[
+    (
+        "casual",
+        "Casual: relaxed and natural, like a message to a friend; short sentences; no formal phrasing; keep Hinglish words as spoken",
+    ),
+    (
+        "clear",
+        "Clear: natural and friendly with correct punctuation and capitals; not stiff",
+    ),
+    (
+        "formal",
+        "Formal: complete sentences and a professional tone, as in a work e-mail",
+    ),
+];
+
+/// The description for a style id from `STYLES`, if it is one.
+pub fn style_description(style: &str) -> Option<&'static str> {
+    STYLES.iter().find(|(id, _)| *id == style).map(|(_, d)| *d)
+}
+
 /// The cleanup system prompt template: the first fenced block after "## System prompt".
 pub fn cleanup_template() -> &'static str {
     static TEMPLATE: LazyLock<String> = LazyLock::new(|| {
@@ -179,6 +200,22 @@ pub fn build_cleanup(
     language: &str,
     dictionary_terms: &[String],
 ) -> CleanupRequest {
+    build_cleanup_styled(prepared, level, category, language, dictionary_terms, None)
+}
+
+/// Like `build_cleanup`, with the user's chosen style for this kind of app (a `STYLES` id).
+/// Unknown or missing styles fall back to the app type's own style.
+pub fn build_cleanup_styled(
+    prepared: &Prepared,
+    level: Level,
+    category: AppCategory,
+    language: &str,
+    dictionary_terms: &[String],
+    style: Option<&str>,
+) -> CleanupRequest {
+    let style_text = style
+        .and_then(style_description)
+        .unwrap_or_else(|| category.style_description());
     let level_name = match level {
         Level::Professional => "PROFESSIONAL",
         _ => "LIGHT",
@@ -189,7 +226,7 @@ pub fn build_cleanup(
         dictionary_terms.join(", ")
     };
     let system = cleanup_template()
-        .replace("{style_description}", category.style_description())
+        .replace("{style_description}", style_text)
         .replace("{level}", level_name)
         .replace("{dictionary_terms}", &terms)
         .replace(
@@ -747,6 +784,40 @@ mod tests {
         assert_eq!(
             check("Send it to Rahul, sorry, to Priya.", "Send it to Priya.").unwrap(),
             "Send it to Priya."
+        );
+    }
+
+    #[test]
+    fn chosen_style_replaces_the_app_default() {
+        let p = crate::pipeline::prepare(
+            "hey whats up",
+            &crate::pipeline::Settings::default(),
+            &crate::dictionary::Dictionary::default(),
+            &crate::snippets::SnippetSet::default(),
+        );
+        let casual = build_cleanup_styled(
+            &p,
+            Level::Light,
+            AppCategory::Email,
+            "en",
+            &[],
+            Some("casual"),
+        );
+        assert!(casual.system.contains("like a message to a friend"));
+        let default = build_cleanup_styled(
+            &p,
+            Level::Light,
+            AppCategory::Email,
+            "en",
+            &[],
+            Some("nonsense"),
+        );
+        assert!(default
+            .system
+            .contains(AppCategory::Email.style_description()));
+        assert_eq!(
+            build_cleanup(&p, Level::Light, AppCategory::Chat, "en", &[]).system,
+            build_cleanup_styled(&p, Level::Light, AppCategory::Chat, "en", &[], None).system
         );
     }
 

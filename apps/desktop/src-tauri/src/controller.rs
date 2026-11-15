@@ -106,8 +106,10 @@ pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
             c.apply_settings();
             c.expire_old_audio();
             // Load and warm up the local model now, so the first dictation is not the slow one.
+            // (Only on the graphics card: there it prepares the GPU programs; on the processor a
+            // warm-up of a large model takes long and delays the first key press.)
             if c.ensure_engine().is_ok() {
-                if let Some(loaded) = c.engine.as_ref() {
+                if let Some(loaded) = c.engine.as_ref().filter(|l| l.gpu) {
                     loaded.engine.warm_up();
                 }
             }
@@ -144,7 +146,8 @@ impl Controller {
         }
     }
 
-    fn pill(&self, state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
+    fn pill(&self, mut state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
+        state.sounds = self.state().setting("sounds") != "off";
         let generation = self.pill_generation.fetch_add(1, Ordering::SeqCst) + 1;
         overlay::emit(&self.app, &state);
         overlay::show(&self.app, target_hwnd);
@@ -179,11 +182,28 @@ impl Controller {
     }
 
     fn message(&self, state: &'static str, message: impl Into<String>, target: Option<isize>) {
+        let message = message.into();
+        if let Some(path) = std::env::var_os("APP_TEST_LOG") {
+            if std::env::var_os("APP_DATA_DIR").is_some() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(
+                        f,
+                        "{} pill {state}: {message}",
+                        chrono::Utc::now().to_rfc3339()
+                    );
+                }
+            }
+        }
         let secs = if state == "error" { 4 } else { 2 };
         self.pill(
             PillState {
                 state,
-                message: message.into(),
+                message,
                 ..Default::default()
             },
             target,
@@ -243,6 +263,19 @@ impl Controller {
     }
 
     fn on_action(&mut self, action: Action) {
+        // Test runs only: a trace of shortcut actions, for automated end-to-end checks.
+        if let Some(path) = std::env::var_os("APP_TEST_LOG") {
+            if std::env::var_os("APP_DATA_DIR").is_some() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(f, "{} {action:?}", chrono::Utc::now().to_rfc3339());
+                }
+            }
+        }
         match action {
             Action::PttStart => self.begin(false),
             Action::HandsFreeStart => self.begin(true),
@@ -364,6 +397,8 @@ impl Controller {
             seconds: elapsed.as_secs(),
             hands_free: session.hands_free,
             engine: String::new(),
+            // Level updates while listening never replay the start sound.
+            sounds: false,
         };
         overlay::emit(&self.app, &state);
     }
@@ -391,7 +426,10 @@ impl Controller {
             }
             return;
         }
-        match self.process(samples, session.target, true) {
+        // Test runs with a trace (APP_TEST_LOG + own data folder) never type into other windows.
+        let test_run = std::env::var_os("APP_TEST_LOG").is_some()
+            && std::env::var_os("APP_DATA_DIR").is_some();
+        match self.process(samples, session.target, !test_run) {
             Ok(result) => match &result.outcome {
                 None => self.message("info", "Didn't hear anything", hwnd),
                 Some(o) if o.inserted() => self.message("done", o.message(), hwnd),
@@ -580,12 +618,22 @@ impl Controller {
             hwnd,
             None,
         );
-        let request = llm::build_cleanup(
+        let app_category = llm::AppCategory::parse(&format!("{category:?}"));
+        // The style the user chose for this kind of app on the Style page.
+        let style_key = match app_category {
+            llm::AppCategory::Chat => "style_chat",
+            llm::AppCategory::Email => "style_email",
+            llm::AppCategory::Docs => "style_docs",
+            _ => "style_other",
+        };
+        let style = self.state().setting(style_key);
+        let request = llm::build_cleanup_styled(
             &prepared,
             settings.level,
-            llm::AppCategory::parse(&format!("{category:?}")),
+            app_category,
             language,
             dictionary.terms(),
+            Some(style.as_str()).filter(|s| !s.is_empty()),
         );
         let mut result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
         // Providers retire models. If ours is gone, pick a current one and try once more.
@@ -672,7 +720,16 @@ impl Controller {
         // (measured threshold, see app_asr::ENGLISH_SURE), for local and cloud recognition.
         let mut hinglish_route = language == "hinglish";
         let mut detected = false;
-        if language == "en-hinglish" && has_speech && self.ensure_engine().is_ok() {
+        let cloud_cfg = crate::asr_config(&self.state()).filter(|_| has_speech);
+        // The local English/Hinglish check runs the model's encoder once: instant on the
+        // graphics card, but seconds to minutes on the processor. With Groq on and no graphics
+        // card, skip it and let Groq detect the language.
+        let local_fast = cfg!(feature = "gpu") && self.state().setting("use_gpu") == "true";
+        if language == "en-hinglish"
+            && has_speech
+            && (cloud_cfg.is_none() || local_fast)
+            && self.ensure_engine().is_ok()
+        {
             if let Some(loaded) = self.engine.as_ref() {
                 if let Ok(p) = loaded
                     .engine
@@ -687,7 +744,7 @@ impl Controller {
         // Cloud recognition (only after the user agreed to send audio), else on this computer.
         let mut cloud_note = None;
         let mut recognised: Option<(String, String)> = None;
-        if let Some(cfg) = crate::asr_config(&self.state()).filter(|_| has_speech) {
+        if let Some(cfg) = cloud_cfg {
             let wav = providers::wav_bytes(&samples);
             let bytes = wav.len();
             // Groq's Whisper answers Hinglish in mixed Hindi/Roman letters whatever the

@@ -17,8 +17,8 @@ android {
         applicationId = brand.getValue("appId")
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         resValue("string", "app_name", brand.getValue("appName"))
         ndk {
             // Built by cargo-ndk into src/main/jniLibs (see .github/workflows/android.yml).

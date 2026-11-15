@@ -43,6 +43,8 @@ export interface Status {
   words_this_week: number;
   shortcuts: [string, string][];
   cloud_speech: boolean;
+  gpu_on: boolean;
+  gpu_present: boolean;
 }
 
 export interface Dictation {
@@ -98,6 +100,7 @@ export interface PillState {
   seconds: number;
   hands_free: boolean;
   engine: string;
+  sounds: boolean;
 }
 
 export type Settings = Record<string, string>;

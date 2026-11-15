@@ -304,6 +304,15 @@ const SETTINGS: &[(&str, &str)] = &[
     ("theme", "system"),
     // Shown in the greeting on Home; empty = no name.
     ("user_name", ""),
+    // Writing style per kind of app (Style page): "casual", "clear" or "formal".
+    ("style_chat", "casual"),
+    ("style_email", "formal"),
+    ("style_docs", "clear"),
+    ("style_other", "clear"),
+    // Words per day for the Home challenge.
+    ("daily_goal", "100"),
+    // Short sounds when dictation starts and ends.
+    ("sounds", "on"),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -397,6 +406,8 @@ pub fn heal_ai_model(state: &AppState, cfg: &providers::Config) -> Option<String
 /// AI clean-up for Roman Hinglish, so it only ranks first when AI clean-up is on.
 fn model_rank(id: &str, ai_on: bool) -> u8 {
     match id {
+        // Without a graphics card the big models are far too slow: prefer the small ones.
+        "large-v3" | "large-v3-turbo" if !gpu_available() => 8,
         "large-v3" if ai_on => 0,
         "large-v3-turbo" => 1,
         "large-v3" => 2,
@@ -404,6 +415,31 @@ fn model_rank(id: &str, ai_on: bool) -> u8 {
         "base" => 4,
         _ => 9,
     }
+}
+
+/// True when this build can use a graphics card and one is present.
+fn gpu_available() -> bool {
+    cfg!(feature = "gpu") && app_asr::best_gpu().is_some()
+}
+
+/// Recognition on the processor is many times slower; with a large model a dictation can take
+/// minutes, which looks like "dictation does not work" (owner's laptop, 15 Nov 2026: the
+/// graphics-card switch was off and Large v3 was selected). Once: switch it back on when a
+/// graphics card exists. The user can still turn it off again.
+fn heal_gpu_setting(state: &AppState) {
+    let Ok(conn) = state.db.lock() else { return };
+    if db::get_setting(&conn, "gpu_heal").as_deref() == Some("v1") {
+        return;
+    }
+    if gpu_available() && db::get_setting(&conn, "use_gpu").as_deref() == Some("false") {
+        let _ = db::set_setting(&conn, "use_gpu", "true");
+        db::log_event(
+            &conn,
+            "info",
+            "graphics card switched back on (speech recognition was running on the processor)",
+        );
+    }
+    let _ = db::set_setting(&conn, "gpu_heal", "v1");
 }
 
 /// Selects the best installed speech model when the selected one is missing, or when a
@@ -935,6 +971,10 @@ struct Status {
     shortcuts: Vec<(&'static str, &'static str)>,
     /// Cloud speech recognition is on (and agreed to).
     cloud_speech: bool,
+    /// Speech recognition on this computer runs on the graphics card.
+    gpu_on: bool,
+    /// A usable graphics card exists.
+    gpu_present: bool,
 }
 
 #[tauri::command]
@@ -981,6 +1021,8 @@ fn get_status(state: State<AppState>) -> Status {
             ("Alt + Shift + N", "Open the Scratchpad (notes you can dictate into)"),
         ],
         cloud_speech: asr_config(&state).is_some(),
+        gpu_on: cfg!(feature = "gpu") && state.setting("use_gpu") == "true" && gpu_available(),
+        gpu_present: gpu_available(),
     }
 }
 
@@ -1406,6 +1448,7 @@ pub fn run() {
             {
                 // Before the speech engine starts: owner's recommended defaults, best model.
                 let state = handle.state::<AppState>();
+                heal_gpu_setting(&state);
                 apply_recommended_defaults(&state);
                 auto_pick_model(&state);
             }

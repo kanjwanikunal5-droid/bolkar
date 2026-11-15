@@ -22,6 +22,8 @@ pub struct PillState {
     pub hands_free: bool,
     /// e.g. "Local - Large v3 Turbo (GPU)".
     pub engine: String,
+    /// Play the short start / done / error sounds (Settings > General).
+    pub sounds: bool,
 }
 
 fn pill_hwnd(app: &AppHandle) -> Option<HWND> {

@@ -120,6 +120,11 @@ impl Machine {
         self.mode != Mode::Idle
     }
 
+    /// Nothing in progress and no modifier held.
+    pub fn quiet(&self) -> bool {
+        self.mode == Mode::Idle && !self.ctrl && !self.win && !self.alt && !self.shift
+    }
+
     /// Called by the controller when a recording ends for a reason the keyboard did not
     /// cause (the 20-minute cap, an error).
     pub fn force_idle(&mut self) {

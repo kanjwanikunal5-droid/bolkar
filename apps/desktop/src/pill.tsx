@@ -5,7 +5,31 @@ import { createRoot } from "react-dom/client";
 import type { PillState } from "./api";
 import "./styles.css";
 
-const HIDDEN: PillState = { state: "hidden", message: "", level: 0, seconds: 0, hands_free: false, engine: "" };
+const HIDDEN: PillState = { state: "hidden", message: "", level: 0, seconds: 0, hands_free: false, engine: "", sounds: false };
+
+/** Short, quiet cues made with the Web Audio API (no sound files). */
+let audio: AudioContext | null = null;
+function cue(kind: "start" | "done" | "error") {
+  try {
+    audio ??= new AudioContext();
+    const notes = kind === "start" ? [523.25, 783.99] : kind === "done" ? [880, 1174.66] : [311.13, 233.08];
+    notes.forEach((f, i) => {
+      const t = audio!.currentTime + i * 0.09;
+      const osc = audio!.createOscillator();
+      const gain = audio!.createGain();
+      osc.type = "sine";
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.06, t + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      osc.connect(gain).connect(audio!.destination);
+      osc.start(t);
+      osc.stop(t + 0.18);
+    });
+  } catch {
+    /* no audio device: stay silent */
+  }
+}
 const BARS = 9;
 
 /**
@@ -48,7 +72,17 @@ function Wave({ level, busy }: { level: number; busy: boolean }) {
 function Pill() {
   const [pill, setPill] = useState<PillState>(HIDDEN);
   useEffect(() => {
-    const off = listen<PillState>("pill", (e) => setPill(e.payload));
+    let last = "hidden";
+    const off = listen<PillState>("pill", (e) => {
+      const next = e.payload;
+      if (next.sounds && next.state !== last) {
+        if (next.state === "listening") cue("start");
+        else if (next.state === "done") cue("done");
+        else if (next.state === "error") cue("error");
+      }
+      last = next.state;
+      setPill(next);
+    });
     return () => {
       void off.then((f) => f());
     };

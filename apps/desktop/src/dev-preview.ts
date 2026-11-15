@@ -55,6 +55,12 @@ let settings: Record<string, string> = {
   check_updates: "off",
   theme: "system",
   user_name: "Kunal",
+  daily_goal: "100",
+  sounds: "on",
+  style_chat: "casual",
+  style_email: "formal",
+  style_docs: "clear",
+  style_other: "clear",
 };
 
 const handlers: Record<string, Handler> = {
@@ -69,6 +75,8 @@ const handlers: Record<string, Handler> = {
     words_this_week: 1260,
     shortcuts: [],
     cloud_speech: true,
+    gpu_on: true,
+    gpu_present: true,
   }),
   get_settings: () => settings,
   set_setting: (a) => {
@@ -79,7 +87,7 @@ const handlers: Record<string, Handler> = {
     total_words: 18432,
     total_dictations: 702,
     commands: 14,
-    words_today: 164,
+    words_today: 64,
     words_this_week: 1260,
     speaking_wpm: 131.4,
     minutes_saved: 372,
