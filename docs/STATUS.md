@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **16 November 2026** (version 0.4.0 "Speak Flow" section near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **16 November 2026** (versions 0.4.0 and 0.4.1 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -598,6 +598,59 @@ every visit (a passphrase stays available for shared devices).
   window now starts hidden and is shown at normal start-up only. The test script watches for any
   visible window of the test process every 100 ms (ignoring the framework's 14x14 transparent
   helper window) and stops the test if one appears; none appeared in the final runs.
+
+## 16 November 2026 (evening): version 0.4.1 - warmer banner photos, old installs removed
+
+### Why the owner still saw "Bolkar" and the old pictures
+The owner had installed Speak Flow 0.4.0, but the old Bolkar app (in
+`%LOCALAPPDATA%\Bolkar`) was still running in the tray. Both share the internal app id, so the
+single-instance check handed every Speak Flow start to the running Bolkar window, which showed
+the old name and the old drawn banner. The 0.4.0 source itself has no visible "Bolkar" text
+(searched `apps/` and `crates/`; only the internal id `app.bolkar.voice`, the web app's
+storage name and its cache name remain, none of them shown to the user).
+
+### What changed
+- **Home banner photos** chosen to match the owner's reference picture (warm, softly lit,
+  people laughing, dark banner). Four slides now, the fourth explains "Speak in points" and
+  opens Settings > Writing. Photos from Unsplash under the Unsplash License (free to use, no
+  attribution required; credited here anyway): photo-1722247410946-e1c0e69ecaa1 (woman
+  laughing, cropped above a box in her friend's hand), photo-1785435269070-3f980c7b8d65 (woman
+  smiling in warm light), photo-1591286751500-eb873051de44 (man with a laptop in warm light,
+  mirrored), photo-1761145226797-1e0e1d49a11d (two friends at night). Cropped to 1600 px wide.
+- Banner background changed from blue-black to warm black; the highlighted word is warm and
+  italic; the photo area is a little wider and the banner a little taller.
+- **Bug fixed:** in dark theme the banner button ("Try it now") was dark text on a dark
+  background (a dark-theme `.btn` rule overrode it). It is white with dark text in both themes.
+- Checked in the browser pane (nothing shown on the owner's screen): all four slides in dark
+  theme, light theme, a 900 px wide window, and the "Points settings" button opening Settings
+  with the points option visible. The only console errors are the expected ones from desktop-only
+  calls in a plain browser.
+
+### Checks run
+- `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -D warnings` clean.
+- `cargo test --workspace`: **149 passed, 0 failed, 2 ignored**.
+- Release installer `Speak Flow_0.4.1_x64-setup.exe` builds (`pnpm tauri build`, which also
+  type-checks and builds the front end).
+
+### Install on the owner's laptop
+Done at the owner's request ("delete the earlier versions and install the newest version"):
+- Stopped the running Bolkar app, backed up history, settings, meetings and audio (not the
+  1.6 GB models) to `D:\dev\backup\speakflow-data-2026-11-16`.
+- Silent uninstall of Bolkar and of Speak Flow 0.4.0 (exit code 0 each). The Tauri uninstaller
+  deletes app data only when its checkbox is ticked, and silent mode never shows it (checked in
+  the generated `installer.nsi`). Removed the leftover `%LOCALAPPDATA%\Bolkar` folder, the
+  Bolkar Start menu shortcut and the old `HKCU\Software\bolkar\Bolkar` key.
+- Models were the same size before and after (1,655,181,398 bytes); the database is still there.
+- Silent install of 0.4.1 (exit code 0): installed version 0.4.1, Start menu and desktop
+  shortcuts "Speak Flow". The old Android APK in Downloads went to the Recycle Bin; old installers
+  in the build folder were deleted.
+- Started the new app. Windows does not keep a Tauri window minimized, so the Speak Flow window
+  opened once on the owner's screen. Not yet checked by the owner: a real Ctrl + Win dictation.
+- Kept on purpose: the data folders `%APPDATA%\app.bolkar.voice` and
+  `%LOCALAPPDATA%\app.bolkar.voice` (history, models, settings, WebView cache). Their names come
+  from the internal app id and are never shown in the app. Changing the id would mean moving
+  1.6 GB of data, so it was left alone.
+
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

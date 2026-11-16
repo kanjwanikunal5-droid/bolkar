@@ -3,6 +3,7 @@ import { api, type AiStatus, type Dictation, type Insights, type Settings, type 
 import { Icon } from "./icons";
 import photoEdit from "./assets/banner-edit.jpg";
 import photoHinglish from "./assets/banner-hinglish.jpg";
+import photoPoints from "./assets/banner-points.jpg";
 import photoStyle from "./assets/banner-style.jpg";
 import { CountUp, EmptyState, MicLevel, ProgressBar, appName, dayLabel, greeting, timeOf, useToast } from "./ui";
 
@@ -167,6 +168,17 @@ function Banner({ go }: { go: Go }) {
       photo: photoStyle,
       flip: true,
       go: () => go("style"),
+    },
+    {
+      title: (
+        <>
+          Speak in <em>points</em>
+        </>
+      ),
+      text: "Say “first thing…, second thing…” or “pehli baat…” and get a tidy numbered list. Hands-free turns separate requests into bullets.",
+      cta: "Points settings",
+      photo: photoPoints,
+      go: () => go("settings", "writing"),
     },
   ];
   const [i, setI] = useState(0);
