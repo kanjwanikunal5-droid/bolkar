@@ -1387,30 +1387,63 @@ progress {
 }
 
 .banner-hero {
+  --hero-bg: #0d1a24;
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 1rem;
-  min-height: 15rem;
-  padding: 1.6rem 1.8rem 2.2rem;
+  min-height: 16rem;
+  padding: 1.8rem 1.9rem 2.4rem;
   margin-bottom: 1.4rem;
   border-radius: calc(var(--radius) + 6px);
-  background: radial-gradient(600px 300px at 80% 30%, rgba(91, 218, 205, 0.25), transparent 60%),
-    linear-gradient(135deg, #0b1d2a 0%, #0f2f3a 45%, #1c1f45 100%);
+  background: var(--hero-bg);
   color: #fff;
   overflow: hidden;
+  isolation: isolate;
   box-shadow: var(--shadow-md);
 }
 
+/* The photo fills the right part; a gradient blends its left edge into the dark copy area
+   so the white text keeps strong contrast whatever the photo shows. */
+.banner-photo {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 64%;
+  z-index: -1;
+  animation: art-in 620ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.banner-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 30%;
+  display: block;
+  user-select: none;
+}
+
+.banner-photo img.flip {
+  transform: scaleX(-1);
+}
+
+.banner-photo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--hero-bg) 0%, rgba(13, 26, 36, 0.82) 22%, rgba(13, 26, 36, 0.25) 55%, rgba(13, 26, 36, 0) 75%),
+    linear-gradient(0deg, rgba(13, 26, 36, 0.55) 0%, rgba(13, 26, 36, 0) 35%);
+}
+
 .banner-copy {
+  position: relative;
+  max-width: 27rem;
   animation: page-in 380ms ease-out;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.35);
 }
 
 .banner-copy h2 {
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 500;
-  font-size: 1.85rem;
+  font-size: 1.95rem;
   line-height: 1.15;
   letter-spacing: -0.01em;
   margin: 0 0 0.6rem;
@@ -1422,19 +1455,13 @@ progress {
 
 .banner-copy p {
   margin: 0 0 1.1rem;
-  opacity: 0.88;
-  max-width: 26rem;
-}
-
-.banner-art {
-  height: 13rem;
-  animation: art-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  opacity: 0.92;
 }
 
 @keyframes art-in {
   from {
     opacity: 0;
-    transform: translateX(18px) scale(0.98);
+    transform: scale(1.03);
   }
   to {
     opacity: 1;
@@ -1474,11 +1501,11 @@ progress {
 }
 
 @media (max-width: 1000px) {
-  .banner-hero {
-    grid-template-columns: 1fr;
+  .banner-photo {
+    width: 100%;
   }
-  .banner-art {
-    display: none;
+  .banner-photo::after {
+    background: linear-gradient(90deg, rgba(13, 26, 36, 0.92) 0%, rgba(13, 26, 36, 0.7) 60%, rgba(13, 26, 36, 0.45) 100%);
   }
 }
 

@@ -26,6 +26,12 @@ pub mod tokens;
 
 pub use normalise::normalise;
 
+/// Spoken enumerations ("first thing ..., second thing ...", "pehli baat ...") as a numbered
+/// list; text without one is returned unchanged. Safe to run on already-formatted text.
+pub fn format_spoken_lists(text: &str) -> String {
+    lists::format_lists(text, &mut Vec::new())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Level {

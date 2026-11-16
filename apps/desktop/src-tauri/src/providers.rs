@@ -1,4 +1,4 @@
-﻿//! AI clean-up providers. All of them speak the OpenAI-compatible "chat completions" API,
+//! AI clean-up providers. All of them speak the OpenAI-compatible "chat completions" API,
 //! so one client covers Groq, Gemini, a local Ollama and any compatible server.
 
 use std::time::{Duration, Instant};
@@ -108,9 +108,15 @@ pub fn transcribe(
         .timeout(timeout)
         .build()
         .map_err(|e| CallError::Network(e.to_string()))?;
+    // Ogg/Opus (compressed, see app_asr::opus) or WAV, told apart by the first bytes.
+    let (name, mime) = if wav.starts_with(b"OggS") {
+        ("dictation.ogg", "audio/ogg")
+    } else {
+        ("dictation.wav", "audio/wav")
+    };
     let file = reqwest::blocking::multipart::Part::bytes(wav)
-        .file_name("dictation.wav")
-        .mime_str("audio/wav")
+        .file_name(name)
+        .mime_str(mime)
         .map_err(|e| CallError::Network(e.to_string()))?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .part("file", file)

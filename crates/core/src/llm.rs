@@ -112,6 +112,18 @@ pub fn transliterate_prompt() -> String {
 /// Shared by the desktop, web and Android apps.
 pub const ROMAN_HINGLISH_EXAMPLE: &str = "Haan bhai, sun na, kya chal raha hai? Main abhi kaam kar raha hoon. To be honest, mujhe bahut kaam hai, okay? Main baad mein call karunga. Tu tension mat le, sab theek ho jayega. Mujhe pata tha ki aisa hi hoga, isliye maine zyada socha nahi. Yaar, main sach bata raha hoon. Kal milte hain, phir plan banayenge.";
 
+/// One-call prompt: Devanagari / mixed Hinglish -> Roman Hinglish with WhatsApp spellings
+/// (replaces script conversion followed by a separate spelling polish).
+pub fn roman_spelling_prompt() -> String {
+    let after = TRANSLIT_SPEC
+        .split_once("## Roman Hinglish with spelling system prompt")
+        .map_or("", |(_, rest)| rest);
+    let body = after.split_once("```\n").map_or("", |(_, rest)| rest);
+    body.split_once("\n```")
+        .map_or("", |(b, _)| b)
+        .replace('\r', "")
+}
+
 /// The Hinglish polish prompt (spelling and obvious mis-hearings, Roman script).
 pub fn hinglish_polish_prompt() -> String {
     let after = TRANSLIT_SPEC

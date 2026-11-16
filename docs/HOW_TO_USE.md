@@ -1,12 +1,14 @@
 # How to use
 
-This covers what exists today: **Windows dictation**, the dictionary, snippets and optional AI
-clean-up. Meeting notes, Android and the web app are not built yet (see [STATUS.md](STATUS.md)).
+This covers the **Windows app** (dictation, dictionary, snippets, AI clean-up, meeting notes).
+The app was called Bolkar until version 0.3.0; it is now **Speak Flow**.
 
 ## Start the app
 
-Double-click the installer (`Bolkar_0.1.0_x64-setup.exe`). It installs for your Windows user
-only, needs no administrator rights, and adds **Bolkar** to the Start menu. Windows may show
+Double-click the installer (`Speak.Flow_0.4.0_x64-setup.exe` or similar). It installs for your
+Windows user only, needs no administrator rights, and adds **Speak Flow** to the Start menu.
+**Coming from Bolkar?** Uninstall Bolkar first (Settings -> Apps); your history, models,
+settings and Groq key are kept and picked up by Speak Flow. Windows may show
 "Windows protected your PC" because the installer is not code-signed yet: click **More info ->
 Run anyway**.
 
@@ -43,7 +45,22 @@ You can pause while holding the keys; nothing stops until you let go.
 | `Alt` + `Shift` + `F` | Fix the last dictation (the app learns new words from your fix) |
 
 While you dictate, a small pill appears at the bottom of the screen: **✕** cancels, the
-moving waveform shows it hears you, **✓** finishes (useful in hands-free mode).
+moving waveform shows it hears you, **✓** finishes (useful in hands-free mode). When the text
+has been typed the pill simply disappears; it only shows a message when something went wrong.
+
+## Speak in points
+
+Say "first thing ..., second thing ..." (or "point one ...", "pehli baat ..., doosri baat ...")
+and you get a numbered list, with filler words removed. Example: "So first thing my name is
+Kunal, second thing my roll number is 52" becomes
+
+```
+1. My name is Kunal
+2. My roll number is 52
+```
+
+In **hands-free mode** (`Ctrl` + `Win` + `H`) the app also turns two or more separate items into
+bullet points on its own. Turn that off in Settings -> Writing -> "Hands-free: write as points".
 
 ## English and Hinglish
 

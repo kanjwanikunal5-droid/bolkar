@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, type AiStatus, type Dictation, type Insights, type Settings, type Status } from "./api";
 import { Icon } from "./icons";
-import { ChatArt, CommandArt, StyleArt } from "./Illustrations";
+import photoEdit from "./assets/banner-edit.jpg";
+import photoHinglish from "./assets/banner-hinglish.jpg";
+import photoStyle from "./assets/banner-style.jpg";
 import { CountUp, EmptyState, MicLevel, ProgressBar, appName, dayLabel, greeting, timeOf, useToast } from "./ui";
 
 export type Go = (page: string, section?: string) => void;
@@ -124,7 +126,9 @@ interface Slide {
   title: JSX.Element;
   text: string;
   cta: string;
-  art: JSX.Element;
+  photo: string;
+  /** Mirror the photo so the person faces the text. */
+  flip?: boolean;
   go: () => void;
 }
 
@@ -138,7 +142,7 @@ function Banner({ go }: { go: Go }) {
       ),
       text: "English or Hinglish, decided for every sentence. Hinglish comes out in Roman letters, spelled the way you text.",
       cta: "Try it now",
-      art: <ChatArt />,
+      photo: photoHinglish,
       go: () => go("guide"),
     },
     {
@@ -149,7 +153,7 @@ function Banner({ go }: { go: Go }) {
       ),
       text: "Select text, press Alt + Shift + C and say “make this a bulleted list”. Word and Google Docs get a real list.",
       cta: "See how",
-      art: <CommandArt />,
+      photo: photoEdit,
       go: () => go("guide"),
     },
     {
@@ -160,7 +164,8 @@ function Banner({ go }: { go: Go }) {
       ),
       text: "Casual in WhatsApp, formal in email, clear everywhere else. Choose once; it is used every time.",
       cta: "Choose styles",
-      art: <StyleArt />,
+      photo: photoStyle,
+      flip: true,
       go: () => go("style"),
     },
   ];
@@ -189,8 +194,8 @@ function Banner({ go }: { go: Go }) {
           {s.cta} <Icon.Chevron size={15} />
         </button>
       </div>
-      <div className="banner-art" key={`a${i}`}>
-        {s.art}
+      <div className="banner-photo" key={`a${i}`} aria-hidden="true">
+        <img src={s.photo} alt="" className={s.flip ? "flip" : undefined} draggable={false} />
       </div>
       <div className="banner-dots" role="tablist" aria-label="Choose a slide">
         {slides.map((_, n) => (

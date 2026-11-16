@@ -392,6 +392,16 @@ function Writing({ settings, set }: { settings: Settings; set: Set }) {
           ]}
         />
       </SettingRow>
+      <SettingRow
+        title="Hands-free: write as points"
+        help="In hands-free mode (Ctrl + Win + H, or double-tap Ctrl + Win), several sentences come out as bullet points. “First thing ..., second thing ...” always becomes a numbered list."
+      >
+        <Switch
+          label="Hands-free: write as points"
+          checked={settings.handsfree_points !== "off"}
+          onChange={(on) => set("handsfree_points", on ? "on" : "off", on ? "Hands-free points on" : "Hands-free points off")}
+        />
+      </SettingRow>
       <SettingRow title="Spoken commands" help="Say “new line”, “full stop” or “bullet point” while dictating.">
         <Switch label="Spoken commands" checked={settings.spoken_commands === "true"} onChange={(on) => set("spoken_commands", String(on), on ? "Spoken commands on" : "Spoken commands off")} />
       </SettingRow>

@@ -15,6 +15,8 @@ whisper-rs = "0.16"
 hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["ogg", "wav", "pcm"] }
 symphonia-adapter-libopus = "0.2"
+# Opus encoder (already built for the decoder above): compresses audio before cloud upload.
+opusic-sys = "0.7"
 regex.workspace = true
 serde.workspace = true
 

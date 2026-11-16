@@ -11,6 +11,7 @@ use whisper_rs::{
 
 pub mod audio;
 pub mod guard;
+pub mod opus;
 
 pub const SAMPLE_RATE: u32 = 16_000;
 

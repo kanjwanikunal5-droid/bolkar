@@ -147,6 +147,11 @@
 
     { "id": "x-lit-001", "category": "level", "level": "LITERAL", "input": "Um, the the meeting is at 3 PM, actually 4 PM.", "expected": "Um, the the meeting is at 3 PM, actually 4 PM." },
     { "id": "x-lit-002", "category": "level", "level": "LITERAL", "input": "first, a. second, b.", "expected": "First, a. Second, b." },
-    { "id": "x-pro-001", "category": "level", "level": "PROFESSIONAL", "input": "Um, the deadline is Monday.", "expected": "The deadline is Monday.", "note": "Without an AI provider PROFESSIONAL equals LIGHT." }
+    { "id": "x-pro-001", "category": "level", "level": "PROFESSIONAL", "input": "Um, the deadline is Monday.", "expected": "The deadline is Monday.", "note": "Without an AI provider PROFESSIONAL equals LIGHT." },
+    { "id": "x-pts-001", "category": "list", "must_pass": true, "input": "so um first thing my name is Kunal Kanjwani, second thing my roll number is 52", "expected": "1. My name is Kunal Kanjwani\n2. My roll number is 52", "note": "Owner's own example (16 Nov 2026)." },
+    { "id": "x-pts-002", "category": "list", "input": "point one call the bank, point two pay the rent", "expected": "1. Call the bank\n2. Pay the rent" },
+    { "id": "x-pts-003", "category": "list", "input": "pehli baat kal meeting hai, doosri baat report bhejni hai", "expected": "1. Kal meeting hai\n2. Report bhejni hai" },
+    { "id": "x-pts-n01", "category": "list", "input": "The first thing I did was call my mother.", "expected": "The first thing I did was call my mother." },
+    { "id": "x-pts-n02", "category": "list", "input": "First thing in the morning I go for a walk.", "expected": "First thing in the morning I go for a walk." }
   ]
 }

@@ -7,12 +7,39 @@ use windows::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
 };
 
+/// Keys are filed under the app's permanent id (it never changes, unlike the display name).
 fn target(provider: &str) -> String {
-    format!("{}/api-key/{provider}", app_core::brand::APP_NAME)
+    format!("{}/api-key/{provider}", app_core::brand::APP_ID)
+}
+
+/// Where earlier versions kept the key: under the display name, current or previous.
+fn legacy_targets(provider: &str) -> Vec<String> {
+    std::iter::once(app_core::brand::APP_NAME)
+        .chain(app_core::brand::PREVIOUS_NAMES.iter().copied())
+        .map(|name| format!("{name}/api-key/{provider}"))
+        .collect()
+}
+
+fn read(target: &str) -> Option<String> {
+    let target = HSTRING::from(target);
+    let mut ptr: *mut CREDENTIALW = std::ptr::null_mut();
+    unsafe {
+        CredReadW(&target, CRED_TYPE_GENERIC, None, &mut ptr).ok()?;
+        let cred = &*ptr;
+        let bytes =
+            std::slice::from_raw_parts(cred.CredentialBlob, cred.CredentialBlobSize as usize)
+                .to_vec();
+        CredFree(ptr as *const _);
+        String::from_utf8(bytes).ok()
+    }
 }
 
 pub fn save(provider: &str, secret: &str) -> Result<(), String> {
-    let target = HSTRING::from(target(provider));
+    write(&target(provider), provider, secret)
+}
+
+fn write(target: &str, provider: &str, secret: &str) -> Result<(), String> {
+    let target = HSTRING::from(target);
     let user = HSTRING::from(provider);
     let mut blob = secret.as_bytes().to_vec();
     let cred = CREDENTIALW {
@@ -36,29 +63,57 @@ pub fn save(provider: &str, secret: &str) -> Result<(), String> {
 }
 
 pub fn load(provider: &str) -> Option<String> {
-    let target = HSTRING::from(target(provider));
-    let mut ptr: *mut CREDENTIALW = std::ptr::null_mut();
-    unsafe {
-        CredReadW(&target, CRED_TYPE_GENERIC, None, &mut ptr).ok()?;
-        let cred = &*ptr;
-        let bytes =
-            std::slice::from_raw_parts(cred.CredentialBlob, cred.CredentialBlobSize as usize)
-                .to_vec();
-        CredFree(ptr as *const _);
-        String::from_utf8(bytes).ok()
+    if let Some(key) = read(&target(provider)) {
+        return Some(key);
     }
+    // Saved by an earlier version under the display name: copy it to the permanent place, so
+    // renaming the app never asks the user for the key again. The old entry is kept, so an
+    // older version still installed (or reinstalled) keeps working; `delete` removes both.
+    for old in legacy_targets(provider) {
+        if let Some(key) = read(&old) {
+            let _ = save(provider, &key);
+            return Some(key);
+        }
+    }
+    None
 }
 
 pub fn delete(provider: &str) {
-    let target = HSTRING::from(target(provider));
-    unsafe {
-        let _ = CredDeleteW(&target, CRED_TYPE_GENERIC, None);
+    for t in std::iter::once(target(provider)).chain(legacy_targets(provider)) {
+        unsafe {
+            let _ = CredDeleteW(&HSTRING::from(t.as_str()), CRED_TYPE_GENERIC, None);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_saved_under_an_old_name_is_found_and_copied() {
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            return;
+        }
+        let p = format!("selftest-move-{}", std::process::id());
+        let old = legacy_targets(&p).pop().unwrap();
+        write(&old, &p, "secret-value-123").unwrap();
+        assert_eq!(read(&target(&p)), None);
+        assert_eq!(load(&p).as_deref(), Some("secret-value-123"));
+        assert_eq!(
+            read(&target(&p)).as_deref(),
+            Some("secret-value-123"),
+            "copied to the id"
+        );
+        assert_eq!(
+            read(&old).as_deref(),
+            Some("secret-value-123"),
+            "old entry kept for an older version"
+        );
+        delete(&p);
+        assert_eq!(load(&p), None);
+        assert_eq!(read(&old), None, "delete removes the old entry too");
+    }
 
     #[test]
     fn save_load_delete_round_trip() {

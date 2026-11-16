@@ -1,5 +1,6 @@
 {
-  "appName": "Bolkar",
+  "appName": "Speak Flow",
   "appId": "app.bolkar.voice",
+  "previousNames": ["Bolkar"],
   "repository": "kanjwanikunal5-droid/bolkar"
 }

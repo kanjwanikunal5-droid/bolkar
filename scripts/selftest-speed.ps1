@@ -2,7 +2,7 @@
 # app and a separate throwaway data folder (the owner's history is not touched). Nothing is
 # pasted anywhere. Synthetic clips: speed only, not accuracy.
 param(
-  [string]$Exe = "$env:LOCALAPPDATA\Bolkar\app-desktop.exe",
+  [string]$Exe = "$env:LOCALAPPDATA\Speak Flow\app-desktop.exe",
   [string]$WorkDir = 'D:\dev\selftest2',
   [string[]]$Clips = @('tts_en_8s', 'tts_en_14s', 'tts_en_20s')
 )

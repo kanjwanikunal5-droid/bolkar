@@ -1,4 +1,4 @@
-# Bolkar (working name)
+# Speak Flow (formerly Bolkar)
 
 Free voice dictation and AI meeting notes that run on your own device.
 

@@ -4,7 +4,7 @@
 param(
   [switch]$WithMic,
   [string]$Meeting = 'D:\bolkar\bench\audio_cache\meeting1',
-  [string]$Exe = "$env:LOCALAPPDATA\Bolkar\app-desktop.exe",
+  [string]$Exe = "$env:LOCALAPPDATA\Speak Flow\app-desktop.exe",
   [string]$Data = 'D:\dev\meet-test',
   [int]$Port = 9334
 )

@@ -2,7 +2,7 @@
 # records COMPUTER SOUND ONLY (the microphone is not recorded), then stops and prints the notes.
 # Uses the golden "topic organisation" transcript from the build prompt.
 param(
-  [string]$Exe = "$env:LOCALAPPDATA\Bolkar\app-desktop.exe",
+  [string]$Exe = "$env:LOCALAPPDATA\Speak Flow\app-desktop.exe",
   [int]$Port = 9333
 )
 $ErrorActionPreference = 'Stop'

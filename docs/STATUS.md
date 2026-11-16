@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **14 November 2026** (Stages 5-9 sections at the end; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **16 November 2026** (version 0.4.0 "Speak Flow" section near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -532,6 +532,72 @@ every visit (a passphrase stays available for shared devices).
 - **Dark theme** reworked: layered surfaces, softer borders, card highlight, richer gradients.
 - Checks: fmt and clippy clean; `cargo test --workspace` **142 passed, 0 failed**; UI builds;
   Home and Style looked at in both themes (browser pane, development sample data).
+
+## 16 November 2026: version 0.4.0 - faster recognition, spoken points, new name "Speak Flow"
+
+### Why dictation felt slow (owner's log, 16 Nov)
+- Recognition took 0.9-12.6 s per dictation, while clean-up took about 0.25-0.4 s and typing
+  about 0.4 s. Groq itself answers in about 0.28 s from this laptop. The time went into
+  (1) uploading uncompressed WAV audio (about 32 KB per second of speech) over a slow uplink,
+  (2) a local English/Hinglish check before every upload, (3) two extra AI calls for Hinglish.
+
+### What changed
+- **Compressed upload**: audio for Groq is now sent as Ogg/Opus (libopus, 24 kbit/s speech
+  mode, own Ogg writer with CRC; `crates/asr/src/opus.rs`, 2 unit tests). WAV is the fallback.
+  Measured on the test clips: 145 KB -> 11.5 KB (12.6x smaller). Accuracy unchanged within noise:
+  Hinglish raw WER 77.1% (WAV) vs 77.8% (Opus) on the hard synthetic set; English 0.62% vs 0.62%.
+- **No local language check with Groq**: with Groq on, the local model is not run first. English
+  setting -> Groq `en`; English + Hinglish -> Groq `hi` with a Roman-Hinglish example prompt (and
+  the owner's name from Settings as a spelling hint). Hinglish is recognised afterwards from the
+  text itself (`hinglish::looks_hinglish`, unit test). If Groq fails the local model is used.
+- **One AI call instead of two** for Hinglish in Devanagari: Roman letters and WhatsApp spellings
+  in one request (`llm::roman_spelling_prompt`, spec/prompts/transliterate.md). Measured WER
+  vs. two calls: 12.46% vs 13.47% (tolerant 10.10% vs 10.44%), 0 answers rejected.
+- **No "Inserted" pop-up**: on success the pill just disappears; messages are shown only for
+  problems (or when the text could not be typed and is on the clipboard).
+- **Spoken points**: "first thing ..., second thing ...", "point one ...", "pehli baat ...,
+  doosri baat ..." become a numbered list; a short opener ("So", "Okay") before the list is
+  dropped. In hands-free mode (Ctrl + Win + H) two or more separate items become bullet points
+  (Settings > Writing > "Hands-free: write as points", on by default). Golden fixtures x-pts-001
+  (the owner's own example -> "1. My name is Kunal Kanjwani / 2. My roll number is 52"),
+  x-pts-002/003 and two negative cases (x-pts-n01/n02: ordinary sentences stay prose).
+- **With Groq on, Large v3 Turbo is preferred** as the local fallback (fast); full Large v3 only
+  when everything is local.
+- **New name "Speak Flow"** (brand.json, `previousNames: ["Bolkar"]`). The internal app id is
+  unchanged, so settings, history and models are kept. The Groq key is now stored under the app
+  id and moved automatically from the old name (unit test against the real Windows Credential
+  Manager: passes).
+- **Home banner photos**: three real photos instead of drawn illustrations, from Unsplash under
+  the Unsplash License (free to use, no attribution required; credited here anyway):
+  photo-1663743629961-c6134ef1afc9 (man laughing on a phone), photo-1731801613353-bad3f67e956c
+  (woman smiling at a screen), photo-1782069327324-57353ef863fc (man with a laptop, mirrored).
+  Cropped to 1400x620. A dark gradient keeps the white text readable. Checked in the browser
+  pane: light, dark and narrow window.
+
+### Checks run
+- `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -D warnings` clean.
+- `cargo test --workspace`: **149 passed, 0 failed, 2 ignored**; golden clean-up fixtures
+  165 of 171 cases right (the same 6 known, non-must-pass failures as before; all new x-pts
+  cases pass).
+- Desktop and web front ends build; the release installer `Speak Flow_0.4.0_x64-setup.exe` builds.
+- **Real app, release build, copy of the owner's settings** (Groq speech + AI clean-up on, his
+  own key; nothing typed anywhere). Recognition time includes the Opus upload:
+
+  | Clip | Recognition | Result |
+  |---|---|---|
+  | English, 7.8 s (synthetic) | 563 ms | exact |
+  | English, 4.2 s (synthetic) | 410 ms | exact |
+  | Hinglish h05, 4.9 s (synthetic) | 668 ms | exact ("Mummy ne bola hai ki khana ready hai, jaldi aa jao.") |
+  | Hinglish h12, 2.7 s (synthetic) | 399 ms | wrong words and Title Case ("Weekend PE Movie Thekna Chalantya.") - known weak clip of the synthetic set |
+  | Owner's points example (Windows voice) | 581 ms | "1. My name is Kunal Kanjwani" / "2. My roll number is 52" |
+  | Hands-free, 3 requests (Windows voice) | 1253 ms | 3 bullet points, words right, but a leading "Um" came back as "Am" (Groq answered in Devanagari) |
+  | Same two clips after prompt v2 | 547 ms / 977 ms | points unchanged; hands-free: "• Please book the meeting room for Monday." / "• Also, send the agenda to the whole team." / "• And remind me to call the bank tomorrow." - filler removed |
+
+- **Quiet test mode** (owner's request: tests must not pop up while he studies): with
+  `APP_SELFTEST_QUIET=1` a self-test shows no pill, no tray icon and plays no sounds; the main
+  window now starts hidden and is shown at normal start-up only. The test script watches for any
+  visible window of the test process every 100 ms (ignoring the framework's 14x14 transparent
+  helper window) and stops the test if one appears; none appeared in the final runs.
 ## Measured accuracy per language
 
 **No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No

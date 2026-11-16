@@ -313,6 +313,8 @@ const SETTINGS: &[(&str, &str)] = &[
     ("daily_goal", "100"),
     // Short sounds when dictation starts and ends.
     ("sounds", "on"),
+    // Hands-free dictation of several sentences is written as bullet points.
+    ("handsfree_points", "on"),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -404,11 +406,19 @@ pub fn heal_ai_model(state: &AppState, cfg: &providers::Config) -> Option<String
 
 /// Speech models from best to least accurate (measured, see docs/STATUS.md). Large v3 needs
 /// AI clean-up for Roman Hinglish, so it only ranks first when AI clean-up is on.
+/// Groq speech recognition is on (read from the environment-independent store).
+fn cloud_on() -> bool {
+    CLOUD_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static CLOUD_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn model_rank(id: &str, ai_on: bool) -> u8 {
     match id {
         // Without a graphics card the big models are far too slow: prefer the small ones.
         "large-v3" | "large-v3-turbo" if !gpu_available() => 8,
-        "large-v3" if ai_on => 0,
+        // With Groq doing the recognition, the local model is only a backup: the fast one wins.
+        "large-v3" if ai_on && !cloud_on() => 0,
         "large-v3-turbo" => 1,
         "large-v3" => 2,
         "small" => 3,
@@ -446,6 +456,10 @@ fn heal_gpu_setting(state: &AppState) {
 /// better one is installed and the user never picked a model by hand.
 fn auto_pick_model(state: &AppState) {
     let ai_on = ai_config(state).is_some();
+    CLOUD_ON.store(
+        asr_config(state).is_some(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let dir = state.models_dir();
     let best = models::CATALOGUE
         .iter()
@@ -1225,6 +1239,13 @@ async fn transcribe_file(
         .map_err(|e| e.to_string())?
 }
 
+/// Test-only: a self-test with `APP_SELFTEST_QUIET=1` shows nothing on screen (no pill, no
+/// tray icon) and plays no sounds, so tests can run while the owner uses the computer.
+pub(crate) fn quiet_test() -> bool {
+    std::env::var_os("APP_SELFTEST_WAV").is_some()
+        && std::env::var("APP_SELFTEST_QUIET").is_ok_and(|v| v == "1")
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -1470,7 +1491,9 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
-            tray.build(app)?;
+            if !quiet_test() {
+                tray.build(app)?;
+            }
             // Opt-in update check at start-up; the UI shows a notice if a newer version exists.
             let auto_check = handle.state::<AppState>().setting("check_updates") == "on"
                 && std::env::var_os("APP_SELFTEST_WAV").is_none();
@@ -1484,6 +1507,10 @@ pub fn run() {
                         let _ = h.emit("update-available", &info);
                     }
                 });
+            }
+            // The window starts hidden (tauri.conf.json) so a test run never flashes it.
+            if std::env::var_os("APP_SELFTEST_WAV").is_none() {
+                show_main(&handle);
             }
             self_test(&handle);
             Ok(())

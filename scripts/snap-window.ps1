@@ -1,6 +1,6 @@
 # Saves a picture of one window (found by process id) without bringing it to the front and
 # without any key presses or clicks. Used to check the app's screens during tests.
-#   snap-window.ps1 -ProcessId 1234 -Out D:\dev\shot.png [-TitlePart "Bolkar"]
+#   snap-window.ps1 -ProcessId 1234 -Out D:\dev\shot.png [-TitlePart "Speak Flow"]
 param(
   [Parameter(Mandatory = $true)][int]$ProcessId,
   [Parameter(Mandatory = $true)][string]$Out,

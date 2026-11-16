@@ -20,6 +20,39 @@ static NUMBER: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// "First thing ...", "second point is ...", "third step: ..." (the noun makes it a list marker,
+/// no comma needed), "point one ...", "point number two ...", and Hinglish "pehli baat ...",
+/// "doosri baat ...", "teesri baat hai ...".
+static THING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\b(?:and then|and|then|aur)\s+)?\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:thing|point|step|item|reason|question)\b(?:\s+(?:is|was))?(?:\s+that)?(\s*[,:.-])?",
+    )
+    .unwrap()
+});
+static POINT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\b(?:and then|and|then|aur)\s+)?\b(?:point|step|item)\s+(?:number\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|10|[1-9])\b(\s*[,:.-])?",
+    )
+    .unwrap()
+});
+static HINDI_ORDINAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\b(?:aur|and|then)\s+)?\b(pehli|pahli|pehla|pahla|doosri|dusri|doosra|dusra|teesri|tisri|teesra|tisra|chauthi|chautha|paanchvi|panchvi|paanchva)\s+(?:baat|point|cheez|cheej)\b(?:\s+(?:hai|ye\s+hai|yeh\s+hai))?(\s*[,:.-])?",
+    )
+    .unwrap()
+});
+
+fn hindi_ordinal_value(word: &str) -> Option<u32> {
+    Some(match word {
+        "pehli" | "pahli" | "pehla" | "pahla" => 1,
+        "doosri" | "dusri" | "doosra" | "dusra" => 2,
+        "teesri" | "tisri" | "teesra" | "tisra" => 3,
+        "chauthi" | "chautha" => 4,
+        "paanchvi" | "panchvi" | "paanchva" => 5,
+        _ => return None,
+    })
+}
+
 static INNER_SENTENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.?!]\s").unwrap());
 
 #[derive(Debug, Clone, Copy)]
@@ -62,9 +95,30 @@ fn number_value(word: &str) -> Option<u32> {
 }
 
 /// A list marker must open a clause: start of text, start of a line, or after punctuation.
+/// Short openers people say before a list ("So, first thing ..."); they do not stop the list.
+const OPENERS: &[&str] = &[
+    "so", "okay", "ok", "well", "alright", "right", "now", "haan", "toh", "to", "acha", "accha",
+];
+
+fn is_opener(s: &str) -> bool {
+    let w = s
+        .trim()
+        .trim_end_matches(['.', ',', '!', ' '])
+        .to_lowercase();
+    OPENERS.contains(&w.as_str())
+}
+
 fn at_clause_start(text: &str, pos: usize) -> bool {
     let before = text[..pos].trim_end_matches([' ', '\t']);
-    before.is_empty() || before.ends_with(['.', '?', '!', ',', ';', ':', '\n'])
+    if before.is_empty() || before.ends_with(['.', '?', '!', ',', ';', ':', '\n']) {
+        return true;
+    }
+    // "So first thing ...": an opener alone at the start of the text or of a sentence.
+    let last_clause = before
+        .rsplit(['.', '?', '!', '\n'])
+        .next()
+        .unwrap_or(before);
+    is_opener(last_clause)
 }
 
 fn find_markers(text: &str) -> Vec<Marker> {
@@ -98,8 +152,51 @@ fn find_markers(text: &str) -> Vec<Marker> {
             });
         }
     }
+    let mut push = |start: usize, end: usize, n: Option<u32>| {
+        if let Some(n) = n {
+            if at_clause_start(text, start) && !markers.iter().any(|m: &Marker| m.start == start) {
+                markers.push(Marker { start, end, n });
+            }
+        }
+    };
+    for caps in THING.captures_iter(text) {
+        let whole = caps.get(0).unwrap();
+        push(
+            whole.start(),
+            whole.end(),
+            ordinal_value(&caps[1].to_lowercase()),
+        );
+    }
+    for caps in POINT_NUMBER.captures_iter(text) {
+        let whole = caps.get(0).unwrap();
+        push(
+            whole.start(),
+            whole.end(),
+            number_value(&caps[1].to_lowercase()),
+        );
+    }
+    for caps in HINDI_ORDINAL.captures_iter(text) {
+        let whole = caps.get(0).unwrap();
+        push(
+            whole.start(),
+            whole.end(),
+            hindi_ordinal_value(&caps[1].to_lowercase()),
+        );
+    }
     markers.sort_by_key(|m| m.start);
-    markers
+    // Overlapping matches ("first thing" also starts like "First,"): keep the longer one.
+    let mut kept: Vec<Marker> = Vec::new();
+    for m in markers {
+        match kept.last_mut() {
+            Some(prev) if m.start < prev.end => {
+                if m.end > prev.end {
+                    *prev = m;
+                }
+            }
+            _ => kept.push(m),
+        }
+    }
+    kept
 }
 
 fn clean_item(raw: &str) -> String {
@@ -192,7 +289,10 @@ pub fn format_lists(text: &str, changes: &mut Vec<Change>) -> String {
         items.push(format!("{}. {}", i + 1, item));
     }
 
-    let lead = text[..list_start].trim_end();
+    let mut lead = text[..list_start].trim_end();
+    if is_opener(lead) {
+        lead = ""; // "So, first thing ..." -> just the list
+    }
     let formatted = items.join("\n");
     let mut out = String::new();
     if !lead.is_empty() {
@@ -246,6 +346,53 @@ mod tests {
             "First we discussed sales. Then we talked about hiring.",
             "This is our number one priority and number two is hiring.",
             "I have two points to make",
+        ] {
+            assert_eq!(run(s), s);
+        }
+    }
+
+    #[test]
+    fn first_thing_second_thing_becomes_points() {
+        assert_eq!(
+            run("First thing my name is Kunal Kanjwani, second thing my roll number is 52."),
+            "1. My name is Kunal Kanjwani\n2. My roll number is 52"
+        );
+        assert_eq!(
+            run("The first point is the budget. The second point is the team."),
+            "The first point is the budget. The second point is the team."
+        );
+        assert_eq!(
+            run("Point one, call the bank. Point number two, pay the rent."),
+            "1. Call the bank\n2. Pay the rent"
+        );
+        assert_eq!(
+            run("Pehli baat, kal meeting hai. Doosri baat, report bhejni hai."),
+            "1. Kal meeting hai\n2. Report bhejni hai"
+        );
+        assert_eq!(
+            run("First thing is that we start early, second thing is that we finish on time."),
+            "1. We start early\n2. We finish on time"
+        );
+    }
+
+    #[test]
+    fn opener_before_the_list_is_dropped() {
+        assert_eq!(
+            run("So first thing my name is Kunal Kanjwani, second thing my roll number is 52"),
+            "1. My name is Kunal Kanjwani\n2. My roll number is 52"
+        );
+        assert_eq!(
+            run("Okay, first point call the bank, second point pay the rent."),
+            "1. Call the bank\n2. Pay the rent"
+        );
+    }
+
+    #[test]
+    fn things_in_ordinary_sentences_stay_prose() {
+        for s in [
+            "The first thing I did was call my mother.",
+            "First thing in the morning I go for a walk.",
+            "That was the second point he made yesterday.",
         ] {
             assert_eq!(run(s), s);
         }

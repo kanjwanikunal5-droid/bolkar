@@ -79,6 +79,31 @@ fn keep_case(original: &str, replacement: &str) -> String {
     }
 }
 
+/// Common Hindi words written in Roman letters that are not also everyday English words
+/// ("main", "to", "me" are left out on purpose).
+const HINDI_MARKERS: &[&str] = &[
+    "hai", "hain", "hoon", "hu", "nahi", "nahin", "kya", "kyun", "kyunki", "mujhe", "tujhe",
+    "mera", "mere", "meri", "tera", "tere", "raha", "rahi", "rahe", "karunga", "karna", "karo",
+    "bhai", "yaar", "abhi", "baad", "mein", "toh", "bahut", "accha", "acha", "theek", "thik",
+    "aaj", "kal", "kuch", "sab", "wahan", "yahan", "lekin", "aur", "bhi", "tha", "thi", "hoga",
+    "jaana", "jana", "baat", "kaise", "kaun", "kab", "humein", "hum", "tum", "aap", "unka",
+];
+
+/// True for Roman text that reads as Hinglish: at least two different common Hindi words.
+pub fn looks_hinglish(text: &str) -> bool {
+    let mut seen: Vec<String> = Vec::new();
+    for w in WORD.find_iter(text) {
+        let w = w.as_str().to_lowercase();
+        if HINDI_MARKERS.contains(&w.as_str()) && !seen.contains(&w) {
+            seen.push(w);
+            if seen.len() >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Applies the spelling rules. Text that is not Hinglish should not be passed in.
 pub fn normalise(text: &str) -> String {
     let joined =
@@ -109,6 +134,18 @@ pub fn normalise(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_hinglish_from_english() {
+        assert!(looks_hinglish("Bhai main abhi busy hoon"));
+        assert!(looks_hinglish("Kal meeting hai, time pe aa jana."));
+        assert!(!looks_hinglish(
+            "Please send me the main report to the team."
+        ));
+        assert!(!looks_hinglish(
+            "Can we reschedule our call to Thursday afternoon?"
+        ));
+    }
 
     #[test]
     fn fixes_common_misspellings() {

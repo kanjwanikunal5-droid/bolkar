@@ -122,7 +122,11 @@ fn main() {
             let Some((id, text)) = line.trim_start_matches('\u{FEFF}').split_once('\t') else {
                 continue;
             };
-            let system = app_core::llm::transliterate_prompt();
+            let system = if args.iter().any(|a| a == "--combined") {
+                app_core::llm::roman_spelling_prompt()
+            } else {
+                app_core::llm::transliterate_prompt()
+            };
             let user = serde_json::json!({ "text": text }).to_string();
             match providers::chat(&cfg, &system, &user, Duration::from_secs(20)) {
                 Ok(a) => {
@@ -161,18 +165,26 @@ fn main() {
         files.sort();
         for f in files {
             let samples = app_asr::audio::read_audio_16k_mono(&f).expect("audio");
-            match providers::transcribe(
-                &cfg,
-                providers::wav_bytes(&samples),
-                lang,
-                prompt,
-                Duration::from_secs(30),
-            ) {
-                Ok((text, _)) => println!(
-                    "{}\t{}",
-                    f.file_stem().unwrap().to_string_lossy(),
-                    text.replace(['\t', '\n'], " ")
-                ),
+            let body = if args.iter().any(|a| a == "--opus") {
+                app_asr::opus::encode_ogg_opus(&samples).expect("opus")
+            } else {
+                providers::wav_bytes(&samples)
+            };
+            let bytes = body.len();
+            let sent = std::time::Instant::now();
+            match providers::transcribe(&cfg, body, lang, prompt, Duration::from_secs(30)) {
+                Ok((text, _)) => {
+                    eprintln!(
+                        "{} {bytes} bytes {} ms",
+                        f.file_stem().unwrap().to_string_lossy(),
+                        sent.elapsed().as_millis()
+                    );
+                    println!(
+                        "{}\t{}",
+                        f.file_stem().unwrap().to_string_lossy(),
+                        text.replace(['\t', '\n'], " ")
+                    )
+                }
                 Err(e) => eprintln!("{}: {e}", f.display()),
             }
             std::thread::sleep(Duration::from_millis(3200));

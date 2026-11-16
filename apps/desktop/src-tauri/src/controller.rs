@@ -147,10 +147,13 @@ impl Controller {
     }
 
     fn pill(&self, mut state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
-        state.sounds = self.state().setting("sounds") != "off";
+        let quiet = crate::quiet_test();
+        state.sounds = !quiet && self.state().setting("sounds") != "off";
         let generation = self.pill_generation.fetch_add(1, Ordering::SeqCst) + 1;
         overlay::emit(&self.app, &state);
-        overlay::show(&self.app, target_hwnd);
+        if !quiet {
+            overlay::show(&self.app, target_hwnd);
+        }
         if let Some(delay) = hide_after {
             let (app, counter) = (self.app.clone(), Arc::clone(&self.pill_generation));
             std::thread::spawn(move || {
@@ -418,7 +421,7 @@ impl Controller {
         if let Some(selection) = session.command {
             match self.run_command(samples, session.target, &selection) {
                 Ok(r) => match &r.outcome {
-                    Some(o) if o.inserted() => self.message("done", "Done", hwnd),
+                    Some(o) if o.inserted() => self.hide_pill(),
                     Some(o) => self.message("info", o.message(), hwnd),
                     None => self.message("info", "Didn't hear an instruction", hwnd),
                 },
@@ -429,10 +432,11 @@ impl Controller {
         // Test runs with a trace (APP_TEST_LOG + own data folder) never type into other windows.
         let test_run = std::env::var_os("APP_TEST_LOG").is_some()
             && std::env::var_os("APP_DATA_DIR").is_some();
-        match self.process(samples, session.target, !test_run) {
+        match self.process(samples, session.target, !test_run, session.hands_free) {
             Ok(result) => match &result.outcome {
                 None => self.message("info", "Didn't hear anything", hwnd),
-                Some(o) if o.inserted() => self.message("done", o.message(), hwnd),
+                // Text went in: no pop-up, the pill just disappears.
+                Some(o) if o.inserted() => self.hide_pill(),
                 Some(o @ Outcome::Copied { .. }) => self.message("info", o.message(), hwnd),
                 Some(o) => self.message("error", o.message(), hwnd),
             },
@@ -510,13 +514,6 @@ impl Controller {
         // Also renumbers the ids s1, s2, ...
         app_core::summary::drop_echo(&mut segments);
         Ok(segments)
-    }
-
-    /// Devanagari -> Roman Hinglish with the AI provider (script only; checked by
-    /// `llm::parse_transliteration`).
-    fn to_roman_hinglish(&self, text: &str) -> Result<String, String> {
-        self.ai_text(&llm::transliterate_prompt(), text, "Roman Hinglish")
-            .and_then(|content| llm::parse_transliteration(&content, text))
     }
 
     /// Hinglish spelling polish (bahut, karunga, ...) and obvious mis-hearings; checked by
@@ -684,6 +681,7 @@ impl Controller {
         mut samples: Vec<f32>,
         target: Option<Target>,
         do_insert: bool,
+        hands_free: bool,
     ) -> Result<DictationResult, String> {
         let hwnd = target.as_ref().map(|t| t.hwnd);
         let audio_ms = samples.len() as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE);
@@ -716,18 +714,16 @@ impl Controller {
         let has_speech = samples.len() >= app_asr::SAMPLE_RATE as usize / 4
             && asr_audio::has_signal(&samples)
             && asr_audio::looks_like_speech(&samples);
-        // English or Hinglish? Whisper's own language detector decides on this computer
-        // (measured threshold, see app_asr::ENGLISH_SURE), for local and cloud recognition.
         let mut hinglish_route = language == "hinglish";
-        let mut detected = false;
         let cloud_cfg = crate::asr_config(&self.state()).filter(|_| has_speech);
-        // The local English/Hinglish check runs the model's encoder once: instant on the
-        // graphics card, but seconds to minutes on the processor. With Groq on and no graphics
-        // card, skip it and let Groq detect the language.
-        let local_fast = cfg!(feature = "gpu") && self.state().setting("use_gpu") == "true";
+        // English or Hinglish? Without Groq, Whisper's own language detector decides on this
+        // computer (measured threshold, see app_asr::ENGLISH_SURE). With Groq there is no local
+        // step at all: one request in Hindi mode keeps English as English (measured 16 Nov
+        // 2026: 15 English clips, same 0.62% word errors as English mode) and Hinglish is
+        // recognised from the answer below. Faster: no model run before the upload.
         if language == "en-hinglish"
             && has_speech
-            && (cloud_cfg.is_none() || local_fast)
+            && cloud_cfg.is_none()
             && self.ensure_engine().is_ok()
         {
             if let Some(loaded) = self.engine.as_ref() {
@@ -736,38 +732,48 @@ impl Controller {
                     .language_probabilities(&samples, &["en", "hi"])
                 {
                     hinglish_route = app_asr::is_hinglish(p[0], p[1]);
-                    detected = true;
                 }
             }
         }
+        // The user's name, spelled their way, helps both recognisers.
+        let name = self.state().setting("user_name");
+        let name_hint = if name.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" {}.", name.trim())
+        };
 
         // Cloud recognition (only after the user agreed to send audio), else on this computer.
         let mut cloud_note = None;
         let mut recognised: Option<(String, String)> = None;
+        let mut used_cloud = false;
         if let Some(cfg) = cloud_cfg {
-            let wav = providers::wav_bytes(&samples);
-            let bytes = wav.len();
-            // Groq's Whisper answers Hinglish in mixed Hindi/Roman letters whatever the
-            // prompt; the AI script conversion below turns it into Roman (measured on the
-            // owner's voice notes, 14 Nov 2026).
-            let (cloud_lang, prompt) = if hinglish_route {
-                (Some("hi".to_string()), llm::ROMAN_HINGLISH_EXAMPLE)
-            } else if detected {
-                (Some("en".to_string()), hint.as_str())
+            // Compressed (Ogg/Opus, about 12 times smaller than WAV, same accuracy measured on
+            // 45 clips): the upload is most of the waiting time on a slow connection.
+            let body = app_asr::opus::encode_ogg_opus(&samples)
+                .unwrap_or_else(|_| providers::wav_bytes(&samples));
+            let bytes = body.len();
+            let (cloud_lang, prompt) = if language == "en" {
+                (Some("en".to_string()), format!("{hint}{name_hint}"))
+            } else if hinglish_mode {
+                (
+                    Some("hi".to_string()),
+                    format!("{}{name_hint}", llm::ROMAN_HINGLISH_EXAMPLE),
+                )
             } else {
-                (lang.clone(), hint.as_str())
+                (lang.clone(), format!("{hint}{name_hint}"))
             };
             let result = providers::transcribe(
                 &cfg,
-                wav,
+                body,
                 cloud_lang.as_deref(),
-                Some(prompt),
+                Some(prompt.trim()),
                 CLOUD_ASR_TIMEOUT,
             );
             if let Ok(conn) = self.state().db.lock() {
                 let outcome = result
                     .as_ref()
-                    .map(|_| "ok".to_string())
+                    .map(|(_, took)| format!("ok in {} ms", took.as_millis()))
                     .unwrap_or_else(|e| e.to_string());
                 db::log_event(
                     &conn,
@@ -780,6 +786,7 @@ impl Controller {
             }
             match result {
                 Ok((text, _)) => {
+                    used_cloud = true;
                     recognised = Some((
                         app_asr::guard::filter_text(&text, quiet),
                         format!("Groq - {}", cfg.model),
@@ -796,13 +803,24 @@ impl Controller {
             Some(r) => r,
             None => {
                 self.ensure_engine()?;
+                // Cloud failed: decide English or Hinglish here, as without Groq.
+                if language == "en-hinglish" && has_speech && !hinglish_route {
+                    if let Some(loaded) = self.engine.as_ref() {
+                        if let Ok(p) = loaded
+                            .engine
+                            .language_probabilities(&samples, &["en", "hi"])
+                        {
+                            hinglish_route = app_asr::is_hinglish(p[0], p[1]);
+                        }
+                    }
+                }
                 let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
                 let options = if hinglish_route {
                     // Hindi recognition steered to Roman letters by an example. No glossary
                     // here: an English-only hint pushes Whisper into translating.
                     Options {
                         language: Some("hi".into()),
-                        initial_prompt: Some(llm::ROMAN_HINGLISH_EXAMPLE.into()),
+                        initial_prompt: Some(format!("{}{name_hint}", llm::ROMAN_HINGLISH_EXAMPLE)),
                         ..Default::default()
                     }
                 } else {
@@ -813,7 +831,8 @@ impl Controller {
                             lang.clone()
                         },
                         // Vocabulary hint: dictionary terms (Whisper reads about 224 tokens of it).
-                        initial_prompt: (!hint.is_empty()).then_some(hint.clone()),
+                        initial_prompt: Some(format!("{hint}{name_hint}"))
+                            .filter(|p| !p.trim().is_empty()),
                         ..Default::default()
                     }
                 };
@@ -823,23 +842,28 @@ impl Controller {
         };
         let mut raw = raw.trim().to_string();
         let mut engine_label = engine_label;
-        // Hinglish is typed in Roman letters, as in WhatsApp. The example prompt above
-        // normally gives Roman text already; Devanagari left over (cloud recognition, or
-        // Whisper ignoring the example) is converted by the AI when it is on.
+        // With Groq in Hindi mode, the answer tells whether it was Hinglish.
+        if used_cloud && language == "en-hinglish" {
+            hinglish_route = llm::has_devanagari(&raw) || app_core::hinglish::looks_hinglish(&raw);
+        }
+        // Hinglish is typed in Roman letters, as in WhatsApp, with WhatsApp spellings. One AI
+        // call does both the script and the spelling (faster, and measured more accurate than
+        // two calls: 12.5% vs 13.5% word errors on 30 clips, 16 Nov 2026).
+        let mut to_clean = raw.clone();
         if hinglish_mode && llm::has_devanagari(&raw) {
-            match self.to_roman_hinglish(&raw) {
+            match self
+                .ai_text(&llm::roman_spelling_prompt(), &raw, "Roman Hinglish")
+                .and_then(|content| llm::parse_transliteration(&content, &raw))
+            {
                 Ok(roman) => {
                     raw = roman;
-                    engine_label.push_str(" + Roman script (AI)");
+                    to_clean = app_core::hinglish::normalise(&raw);
+                    engine_label.push_str(" + Roman Hinglish (AI)");
                 }
                 Err(why) => engine_label.push_str(&format!(" (Devanagari kept: {why})")),
             }
-        }
-        // Common WhatsApp spellings and obvious mis-hearings. The raw transcript keeps what
-        // the recogniser heard; only the text sent on to clean-up is polished.
-        let mut to_clean = raw.clone();
-        if hinglish_route && !raw.is_empty() && !llm::has_devanagari(&raw) {
-            // Offline spelling table first (always on), then the AI polish when allowed.
+        } else if hinglish_route && !raw.is_empty() {
+            // Already Roman: offline spelling table, then the AI spelling polish when allowed.
             to_clean = app_core::hinglish::normalise(&raw);
             match self.polish_hinglish(&to_clean) {
                 Ok(p) => {
@@ -909,6 +933,21 @@ impl Controller {
             },
             hwnd,
         );
+        // Points: spoken enumerations ("first thing ..., second thing ...") always become a
+        // numbered list, also after the AI clean-up; in hands-free mode several sentences become
+        // bullet points (Settings > Writing).
+        let mut final_text = pipeline::format_spoken_lists(&final_text);
+        if hands_free
+            && self.state().setting("handsfree_points") != "off"
+            && !final_text.contains('\n')
+            && app_core::command::items(&final_text).len() >= 2
+        {
+            if let Some(e) =
+                app_core::command::apply(&app_core::command::Command::BulletList, &final_text)
+            {
+                final_text = e.text;
+            }
+        }
         let clean_ms = clean_started.elapsed().as_millis();
         let insert_started = Instant::now();
         let engine_label = match cloud_note {
@@ -1004,8 +1043,9 @@ impl Controller {
         match (text, target) {
             (Some(text), Some(target)) => {
                 let outcome = insert::insert(&text, &target);
-                let state = if outcome.inserted() { "done" } else { "info" };
-                self.message(state, outcome.message(), hwnd);
+                if !outcome.inserted() {
+                    self.message("info", outcome.message(), hwnd);
+                }
             }
             (None, _) => self.message("info", "Nothing dictated yet", hwnd),
             (_, None) => self.message("info", "No window to paste into", hwnd),
@@ -1252,10 +1292,13 @@ impl Controller {
             None
         };
         let hwnd = target.as_ref().map(|t| t.hwnd);
-        let result = self.process(samples, target, do_insert);
+        // Test-only: APP_SELFTEST_HANDSFREE=1 processes the file as a hands-free dictation.
+        let hands_free = std::env::var("APP_SELFTEST_HANDSFREE").is_ok_and(|v| v == "1");
+        let result = self.process(samples, target, do_insert, hands_free);
         match &result {
             Ok(r) => match &r.outcome {
-                Some(o) if o.inserted() => self.message("done", o.message(), hwnd),
+                // Text went in: no pop-up, the pill just disappears.
+                Some(o) if o.inserted() => self.hide_pill(),
                 Some(o) => self.message("info", o.message(), hwnd),
                 None if r.final_text.is_empty() => {
                     self.message("info", "Didn't hear anything", hwnd)
