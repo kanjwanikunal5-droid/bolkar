@@ -77,6 +77,7 @@ const handlers: Record<string, Handler> = {
     cloud_speech: true,
     gpu_on: true,
     gpu_present: true,
+    other_dictation_apps: ["Wispr Flow"],
   }),
   get_settings: () => settings,
   set_setting: (a) => {
@@ -132,6 +133,75 @@ const handlers: Record<string, Handler> = {
   list_snippets: () => [],
   meeting_status: () => null,
   check_update: () => ({ current: "0.2.0", latest: null, newer: false, url: null, message: "You have the latest version." }),
+  list_audio_devices: () => ({
+    inputs: ["Microphone Array (Realtek)", "Headset Microphone (USB)"],
+    outputs: ["Speakers (Realtek)", "Headphones (USB)"],
+    default_input: "Microphone Array (Realtek)",
+    default_output: "Speakers (Realtek)",
+  }),
+  list_meetings: (a) =>
+    [sampleMeeting, { ...sampleMeeting, id: "m2", title: "Interrupted recording", status: "interrupted", has_summary: false, segments: 0, started_at: iso(3000) }]
+      .filter((m) => !a.query || m.title.toLowerCase().includes(String(a.query).toLowerCase()))
+      .map(({ id, title, started_at, duration_ms, status, has_audio, has_summary, segments }) => ({ id, title, started_at, duration_ms, status, has_audio, has_summary, segments })),
+  get_meeting: () => sampleView,
+  diagnostics_info: () => ({ enabled: true, path: "C:\\data\\logs\\diagnostics.log", bytes: 18432 }),
+};
+
+const sampleMeeting = {
+  id: "m1",
+  title: "Weekly finance review",
+  started_at: iso(1500),
+  duration_ms: 1_380_000,
+  status: "summarised",
+  has_audio: true,
+  has_summary: true,
+  segments: 4,
+};
+const seg = (id: string, ms: number, speaker: string, text: string, edited = false) => ({
+  id,
+  start_ms: ms,
+  end_ms: ms + 6000,
+  speaker,
+  text,
+  original: edited ? text.replace("margin report", "report") : text,
+  edited,
+});
+const sampleView = {
+  ...sampleMeeting,
+  segments: [
+    seg("s1", 4000, "System audio", "Sales went up 12 percent this quarter because volumes were higher."),
+    seg("s2", 11000, "Microphone", "But the discounts reduced our margin, so we need to look at pricing."),
+    seg("s3", 19000, "System audio", "Maybe we should move the price review to next month."),
+    seg("s4", 27000, "System audio", "Priya will send the margin report by Friday.", true),
+  ],
+  thoughts: [[15000, "Ask about the discount policy"]],
+  summary: {
+    overview: { title: "Weekly finance review", date: null, duration_min: 23, participants: [], purpose: null },
+    executive_summary: [{ text: "Sales grew 12% but discounts squeezed the margin.", evidence: ["s1", "s2"], check: "linked" }],
+    topics: [
+      {
+        title: "Sales and margin",
+        narrative: {
+          text: "Sales rose 12% this quarter on higher volumes, but discounts reduced the margin, so pricing needs a closer look.",
+          evidence: ["s1", "s2"],
+          check: "quoted",
+        },
+        points: [],
+      },
+    ],
+    decisions: [{ text: "Move the price review to next month.", status: "proposed", evidence: ["s3"], check: "linked" }],
+    action_items: [{ action: "Send the margin report", owner: "Priya", deadline: "Friday", evidence: ["s4"], check: "linked", deadline_tentative: false }],
+    risks: [{ text: "Margin keeps falling if discounts continue at 20%.", evidence: ["s2"], check: "needs_review", note: "the number 20 is not in the cited transcript lines" }],
+    open_questions: [],
+    numbers: [{ value: "12%", context: "sales growth this quarter", evidence: ["s1"] }],
+    next_steps: [],
+    takeaway: null,
+  },
+  dropped: [],
+  flags: ['"Margin keeps falling if discounts continue at 20%.": the number 20 is not in the cited transcript lines'],
+  markdown: "# Weekly finance review",
+  note: null,
+  problems: [],
 };
 
 let callbackId = 1;

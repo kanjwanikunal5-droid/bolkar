@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use app_asr::{audio as asr_audio, Options, WhisperEngine};
 use app_core::command::{self, Command};
 use app_core::dictionary::{Dictionary, Term};
+use app_core::language::{self, LanguageMode, RecogniserLanguage, RecognitionPlan};
 use app_core::llm;
 use app_core::pipeline::{self, Level, Settings};
 use app_core::snippets::{Snippet, SnippetSet};
@@ -41,11 +42,17 @@ pub enum Msg {
     Key(Action),
     SettingsChanged,
     UnloadModel,
-    /// Transcribe meeting tracks: (WAV path, speaker label such as "Me" or "Others").
+    /// Transcribe meeting tracks: (WAV path, source label such as "Microphone"), each from the
+    /// given sample position. While recording (`final_pass` false) only complete pieces are
+    /// taken; at the end everything left is.
     TranscribeMeeting {
         tracks: Vec<(PathBuf, String)>,
-        reply: Sender<Result<Vec<app_core::summary::Segment>, String>>,
+        from: Vec<usize>,
+        final_pass: bool,
+        reply: Sender<Result<MeetingChunk, String>>,
     },
+    /// Apply the retention settings (at start-up and every few hours).
+    Retention,
     File {
         path: PathBuf,
         insert: bool,
@@ -54,6 +61,16 @@ pub enum Msg {
         command: bool,
         reply: Sender<Result<DictationResult, String>>,
     },
+}
+
+/// New transcript lines of a meeting and where each track continues next time.
+#[derive(Debug, Clone, Default)]
+pub struct MeetingChunk {
+    pub segments: Vec<app_core::summary::Segment>,
+    pub next: Vec<usize>,
+    /// False when live transcription is not possible (no graphics card): the transcript is
+    /// then made after the meeting.
+    pub live_ok: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,7 +121,7 @@ pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
                 pill_generation: Arc::new(AtomicU64::new(0)),
             };
             c.apply_settings();
-            c.expire_old_audio();
+            c.apply_retention();
             // Load and warm up the local model now, so the first dictation is not the slow one.
             // (Only on the graphics card: there it prepares the GPU programs; on the processor a
             // warm-up of a large model takes long and delays the first key press.)
@@ -128,22 +145,118 @@ impl Controller {
             .set_keep_open(self.state().setting("keep_mic_open") == "true");
     }
 
-    fn expire_old_audio(&self) {
-        let days: i64 = self
-            .state()
-            .setting("audio_retention_days")
-            .parse()
-            .unwrap_or(7);
-        let before = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-        let paths = self
-            .state()
-            .db
-            .lock()
-            .map(|c| db::expire_audio(&c, &before))
-            .unwrap_or_default();
-        for p in paths {
-            let _ = std::fs::remove_file(p);
+    /// Deletes what the retention settings say is due. Files are deleted first and their
+    /// database entry is cleared only when the file is really gone; failures are recorded,
+    /// never reported as deleted. Only files inside the app's data folder are touched. A
+    /// meeting being recorded has no database entry yet, so it is never affected.
+    fn apply_retention(&self) {
+        let state = self.state();
+        let data_dir = state.data_dir.clone();
+        let days = |key: &str| state.setting(key).trim().parse::<i64>().unwrap_or(0);
+        let before = |d: i64| (chrono::Utc::now() - chrono::Duration::days(d)).to_rfc3339();
+        let mut lines = Vec::new();
+
+        let d = days("audio_retention_days");
+        if d > 0 {
+            let due = state
+                .db
+                .lock()
+                .map(|c| db::dictation_audio_before(&c, &before(d)))
+                .unwrap_or_default();
+            let (mut ok, mut failed) = (0, Vec::new());
+            for (id, path) in due {
+                match crate::remove_app_file(&data_dir, &path) {
+                    Ok(()) => {
+                        if let Ok(c) = state.db.lock() {
+                            let _ = db::clear_dictation_audio(&c, &id);
+                        }
+                        ok += 1;
+                    }
+                    Err(e) => failed.push(e),
+                }
+            }
+            if ok + failed.len() > 0 {
+                lines.push(format!(
+                    "dictation audio older than {d} days: {ok} deleted, {} failed {failed:?}",
+                    failed.len()
+                ));
+            }
         }
+        let d = days("meeting_audio_retention_days");
+        if d > 0 {
+            let due = state
+                .db
+                .lock()
+                .map(|c| db::meeting_audio_before(&c, &before(d)))
+                .unwrap_or_default();
+            let (mut ok, mut failed) = (0, Vec::new());
+            for (id, paths) in due {
+                let errors: Vec<String> = paths
+                    .iter()
+                    .filter_map(|p| crate::remove_app_file(&data_dir, p).err())
+                    .collect();
+                if errors.is_empty() {
+                    if let Ok(c) = state.db.lock() {
+                        let _ = db::clear_meeting_audio(&c, &id);
+                    }
+                    let _ = std::fs::remove_dir(data_dir.join("meetings").join(&id));
+                    ok += 1;
+                } else {
+                    failed.extend(errors);
+                }
+            }
+            if ok + failed.len() > 0 {
+                lines.push(format!("meeting audio older than {d} days: {ok} meetings cleared, {} files failed {failed:?}", failed.len()));
+            }
+        }
+        let d = days("history_retention_days");
+        if d > 0 {
+            let due = state
+                .db
+                .lock()
+                .map(|c| db::dictations_before(&c, &before(d)))
+                .unwrap_or_default();
+            let mut ok = 0;
+            for id in due {
+                let audio = state
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|c| db::delete_dictation(&c, &id).ok())
+                    .flatten();
+                if let Some(p) = audio {
+                    let _ = crate::remove_app_file(&data_dir, &p);
+                }
+                ok += 1;
+            }
+            if ok > 0 {
+                lines.push(format!(
+                    "dictation history older than {d} days: {ok} deleted"
+                ));
+            }
+        }
+        let d = days("meeting_retention_days");
+        if d > 0 {
+            let due = state
+                .db
+                .lock()
+                .map(|c| db::meetings_before(&c, &before(d)))
+                .unwrap_or_default();
+            let mut ok = 0;
+            for id in due {
+                if crate::library::delete_meeting_everywhere(&state, &id).is_ok() {
+                    ok += 1;
+                }
+            }
+            if ok > 0 {
+                lines.push(format!("meetings older than {d} days: {ok} deleted"));
+            }
+        }
+        if let Ok(c) = state.db.lock() {
+            for l in lines {
+                db::log_event(&c, "retention", &l);
+            }
+        };
     }
 
     fn pill(&self, mut state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
@@ -186,6 +299,10 @@ impl Controller {
 
     fn message(&self, state: &'static str, message: impl Into<String>, target: Option<isize>) {
         let message = message.into();
+        if state == "error" {
+            // Error texts describe what went wrong, never what was said.
+            crate::diag::log("error", &message);
+        }
         if let Some(path) = std::env::var_os("APP_TEST_LOG") {
             if std::env::var_os("APP_DATA_DIR").is_some() {
                 use std::io::Write;
@@ -244,9 +361,15 @@ impl Controller {
                 Some(Msg::Key(action)) => self.on_action(action),
                 Some(Msg::SettingsChanged) => self.apply_settings(),
                 Some(Msg::UnloadModel) => self.engine = None,
-                Some(Msg::TranscribeMeeting { tracks, reply }) => {
-                    let _ = reply.send(self.transcribe_meeting(&tracks));
+                Some(Msg::TranscribeMeeting {
+                    tracks,
+                    from,
+                    final_pass,
+                    reply,
+                }) => {
+                    let _ = reply.send(self.transcribe_meeting(&tracks, &from, final_pass));
                 }
+                Some(Msg::Retention) => self.apply_retention(),
                 Some(Msg::File {
                     path,
                     insert,
@@ -472,48 +595,146 @@ impl Controller {
         Ok(())
     }
 
-    /// Meeting tracks -> time-stamped segments, on this computer. Each track is split at quiet
-    /// moments into pieces of at most ~30 s; silent pieces are skipped (no invented text).
+    /// Meeting tracks -> time-stamped lines, on this computer. Each track is read from where
+    /// the last pass stopped and split at quiet moments into pieces of at most ~30 s; silent
+    /// pieces are skipped (no invented text). Every line keeps Whisper's own time stamps plus
+    /// the piece's offset, so a citation points at the sentence, not at a 30 s window.
+    ///
+    /// Language: the Settings mode is mapped to a real recogniser language for every piece
+    /// ("en" or "hi"); "en-hinglish" and "hinglish" are never passed to Whisper.
     fn transcribe_meeting(
         &mut self,
         tracks: &[(PathBuf, String)],
-    ) -> Result<Vec<app_core::summary::Segment>, String> {
+        from: &[usize],
+        final_pass: bool,
+    ) -> Result<MeetingChunk, String> {
+        let mut next: Vec<usize> = (0..tracks.len())
+            .map(|i| from.get(i).copied().unwrap_or(0))
+            .collect();
+        // A dictation is in progress: the live pass waits for the next round.
+        if !final_pass && self.session.is_some() {
+            return Ok(MeetingChunk {
+                segments: Vec::new(),
+                next,
+                live_ok: true,
+            });
+        }
         self.ensure_engine()?;
-        let language = self.state().setting("language");
+        let gpu = self.engine.as_ref().is_some_and(|l| l.gpu);
+        // Without a graphics card a live pass would slow everything down: after the meeting only.
+        if !final_pass && !gpu {
+            return Ok(MeetingChunk {
+                segments: Vec::new(),
+                next,
+                live_ok: false,
+            });
+        }
+        let mode = LanguageMode::from_setting(&self.state().setting("language"));
+        let plan = language::plan(mode);
         let (dictionary, _) = self.vocabulary();
         let hint = dictionary.recogniser_hint(400);
-        let options = Options {
-            language: (language != "auto").then_some(language),
-            initial_prompt: (!hint.is_empty()).then_some(hint),
-            ..Default::default()
-        };
+        let rate = u64::from(app_asr::SAMPLE_RATE);
         let mut segments = Vec::new();
-        for (path, speaker) in tracks {
-            let samples = asr_audio::read_wav_16k_mono(path)?;
-            for (start, piece) in crate::meeting::split_for_recognition(&samples) {
+        for (i, (path, speaker)) in tracks.iter().enumerate() {
+            if !path.is_file() {
+                continue;
+            }
+            let total = asr_audio::wav_len_16k(path)?;
+            let start = next[i];
+            if total <= start {
+                continue;
+            }
+            let region = asr_audio::read_wav_range_16k_mono(path, start, total - start)?;
+            let (pieces, consumed) = crate::meeting::pieces_to_take(&region, final_pass);
+            for (offset, piece) in pieces {
                 if !asr_audio::has_signal(piece) {
                     continue;
                 }
                 let loaded = self.engine.as_ref().ok_or("speech engine not loaded")?;
+                let detected = match plan {
+                    RecognitionPlan::DetectPerPiece => loaded
+                        .engine
+                        .language_probabilities(piece, &["en", "hi"])
+                        .ok()
+                        .map(|p| app_asr::is_hinglish(p[0], p[1])),
+                    RecognitionPlan::Fixed(_) => None,
+                };
+                let lang = language::choose(plan, detected);
+                let options = match lang {
+                    // Hindi recognition steered to Roman letters by an example; no glossary
+                    // (an English-only hint pushes Whisper into translating).
+                    RecogniserLanguage::HindiRoman => Options {
+                        language: Some(lang.code().into()),
+                        initial_prompt: Some(llm::ROMAN_HINGLISH_EXAMPLE.into()),
+                        ..Default::default()
+                    },
+                    RecogniserLanguage::English => Options {
+                        language: Some(lang.code().into()),
+                        initial_prompt: (!hint.is_empty()).then(|| hint.clone()),
+                        ..Default::default()
+                    },
+                };
                 let t = loaded.engine.transcribe(piece, &options)?;
-                let text = t.text.trim().to_string();
-                if text.is_empty() {
-                    continue;
+                let base_ms = (start + offset) as u64 * 1000 / rate;
+                let piece_ms = piece.len() as u64 * 1000 / rate;
+                for (s, e, text) in app_asr::guard::kept_segments(&t.segments) {
+                    let text =
+                        if lang == RecogniserLanguage::HindiRoman && !llm::has_devanagari(&text) {
+                            app_core::hinglish::normalise(&text)
+                        } else {
+                            text
+                        };
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    let s = (s.max(0) as u64).min(piece_ms);
+                    let e = (e.max(0) as u64).clamp(s, piece_ms);
+                    segments.push(app_core::summary::Segment {
+                        id: String::new(),
+                        start_ms: base_ms + s,
+                        end_ms: base_ms + e,
+                        speaker: speaker.clone(),
+                        text: text.trim().to_string(),
+                    });
                 }
-                let start_ms = start as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE);
-                segments.push(app_core::summary::Segment {
-                    id: String::new(),
-                    start_ms,
-                    end_ms: start_ms + piece.len() as u64 * 1000 / u64::from(app_asr::SAMPLE_RATE),
-                    speaker: speaker.clone(),
-                    text,
-                });
+            }
+            next[i] = start + consumed;
+        }
+        self.romanise_segments(&mut segments, mode);
+        Ok(MeetingChunk {
+            segments,
+            next,
+            live_ok: gpu,
+        })
+    }
+
+    /// Hinglish lines that came back in Devanagari are written in Roman letters, as in
+    /// dictation, when AI clean-up is set up. Without it they are kept as they are (never
+    /// translated), and the diagnostics log notes it.
+    fn romanise_segments(&self, segments: &mut [app_core::summary::Segment], mode: LanguageMode) {
+        if !mode.allows_hinglish() {
+            return;
+        }
+        let mut kept = 0;
+        for s in segments.iter_mut().filter(|s| llm::has_devanagari(&s.text)) {
+            match self
+                .ai_text(
+                    &llm::roman_spelling_prompt(),
+                    &s.text,
+                    "Roman Hinglish (meeting)",
+                )
+                .and_then(|content| llm::parse_transliteration(&content, &s.text))
+            {
+                Ok(roman) => s.text = app_core::hinglish::normalise(&roman),
+                Err(_) => kept += 1,
             }
         }
-        segments.sort_by_key(|s| s.start_ms);
-        // Also renumbers the ids s1, s2, ...
-        app_core::summary::drop_echo(&mut segments);
-        Ok(segments)
+        if kept > 0 {
+            crate::diag::log(
+                "meeting",
+                &format!("{kept} line(s) kept in Devanagari (AI clean-up off or failed)"),
+            );
+        }
     }
 
     /// Hinglish spelling polish (bahut, karunga, ...) and obvious mis-hearings; checked by
@@ -699,15 +920,18 @@ impl Controller {
         let quiet = asr_audio::rms(&samples) < 0.01;
         asr_audio::normalise_quiet(&mut samples, 0.05, 8.0);
 
-        let language = self.state().setting("language");
+        // The Settings value is read through the typed mode, so only "en", "en-hinglish" or
+        // "hinglish" can appear below (an old or unknown value means "en-hinglish").
+        let mode = LanguageMode::from_setting(&self.state().setting("language"));
+        let language = mode.setting().to_string();
         let (dictionary, snippets) = self.vocabulary();
         let hint = dictionary.recogniser_hint(400);
         // "en-hinglish" = English or Hinglish, decided per dictation; "hinglish" = always Hinglish.
-        let hinglish_mode = matches!(language.as_str(), "en-hinglish" | "hinglish");
-        let lang = match language.as_str() {
-            "auto" | "en-hinglish" => None,
-            "hinglish" => Some("hi".to_string()),
-            other => Some(other.to_string()),
+        let hinglish_mode = mode.allows_hinglish();
+        let lang = match mode {
+            LanguageMode::EnglishHinglish => None,
+            LanguageMode::Hinglish => Some(RecogniserLanguage::HindiRoman.code().to_string()),
+            LanguageMode::English => Some(RecogniserLanguage::English.code().to_string()),
         };
         let started = Instant::now();
 
@@ -840,7 +1064,8 @@ impl Controller {
                 (transcript.text.trim().to_string(), loaded.label.clone())
             }
         };
-        let mut raw = raw.trim().to_string();
+        // A capitals-only answer gets normal sentence capitals (words unchanged).
+        let mut raw = pipeline::fix_all_caps(raw.trim());
         let mut engine_label = engine_label;
         // With Groq in Hindi mode, the answer tells whether it was Hinglish.
         if used_cloud && language == "en-hinglish" {
@@ -933,20 +1158,14 @@ impl Controller {
             },
             hwnd,
         );
-        // Points: spoken enumerations ("first thing ..., second thing ...") always become a
-        // numbered list, also after the AI clean-up; in hands-free mode several sentences become
-        // bullet points (Settings > Writing).
+        // Natural prose first. Spoken enumerations ("first thing ..., second thing ...")
+        // become a numbered list, also after the AI clean-up; "bullet point" commands were
+        // handled by the rules. Hands-free bullets only with the opt-in list setting
+        // (Settings > Writing > Lists); a full stop alone never starts a new bullet.
         let mut final_text = pipeline::format_spoken_lists(&final_text);
-        if hands_free
-            && self.state().setting("handsfree_points") != "off"
-            && !final_text.contains('\n')
-            && app_core::command::items(&final_text).len() >= 2
-        {
-            if let Some(e) =
-                app_core::command::apply(&app_core::command::Command::BulletList, &final_text)
-            {
-                final_text = e.text;
-            }
+        if hands_free {
+            let format = pipeline::ListFormat::from_setting(&self.state().setting("list_format"));
+            final_text = pipeline::hands_free_structure(&final_text, format);
         }
         let clean_ms = clean_started.elapsed().as_millis();
         let insert_started = Instant::now();
@@ -1019,10 +1238,27 @@ impl Controller {
             },
             cleanup,
         };
-        if let Ok(conn) = self.state().db.lock() {
-            let _ = db::insert_dictation(&conn, &record);
+        // The text is already in the app; a failed history save must not undo that, but the
+        // user is told (instead of finding the dictation missing later).
+        let saved = match self.state().db.lock() {
+            Ok(conn) => db::insert_dictation(&conn, &record),
+            Err(e) => Err(e.to_string()),
+        };
+        match saved {
+            Ok(()) => {
+                let _ = self.app.emit("dictation-added", &record.id);
+            }
+            Err(e) => {
+                crate::diag::log("history", &format!("dictation not saved: {e}"));
+                if do_insert {
+                    self.message(
+                        "info",
+                        "Text inserted, but it could not be saved in History.",
+                        hwnd,
+                    );
+                }
+            }
         }
-        let _ = self.app.emit("dictation-added", &record.id);
 
         Ok(DictationResult {
             id,
@@ -1248,10 +1484,18 @@ impl Controller {
             },
             cleanup: how.clone(),
         };
-        if let Ok(conn) = self.state().db.lock() {
-            let _ = db::insert_dictation(&conn, &record);
+        match self
+            .state()
+            .db
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|c| db::insert_dictation(&c, &record))
+        {
+            Ok(()) => {
+                let _ = self.app.emit("dictation-added", &record.id);
+            }
+            Err(e) => crate::diag::log("history", &format!("command edit not saved: {e}")),
         }
-        let _ = self.app.emit("dictation-added", &record.id);
         result.final_text = edit.text;
         result.outcome = Some(outcome);
         result.engine = how;

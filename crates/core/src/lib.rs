@@ -11,6 +11,7 @@ pub mod command;
 pub mod dictionary;
 pub mod hardware;
 pub mod hinglish;
+pub mod language;
 pub mod learn;
 pub mod llm;
 pub mod metrics;

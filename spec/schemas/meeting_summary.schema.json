@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "meeting_summary.schema.json",
   "title": "Meeting summary",
-  "description": "Evidence-grounded meeting notes. Every item cites at least one transcript segment id. Sections with nothing to report are empty arrays (the UI omits them).",
+  "description": "Evidence-grounded meeting notes (prompt version 2). Every item cites at least one transcript segment id and may carry an exact supporting quote. Topics are a narrative paragraph plus optional distinct key points. Sections with nothing to report are empty arrays (the UI omits them). The fields check, note and deadline_tentative are added by the app after validation, never by the model.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,10 +36,18 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "points"],
+        "required": ["title", "narrative", "key_points"],
         "properties": {
           "title": { "type": "string", "minLength": 1 },
-          "points": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/point" } }
+          "narrative": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/point" }],
+            "description": "One connected paragraph about the topic (reasons, conditions and caveats kept)."
+          },
+          "key_points": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/point" },
+            "description": "Only distinct takeaways, usually 0-3. Never one item per sentence. (Version 1 called this 'points'; the app still reads that name.)"
+          }
         }
       }
     },
@@ -51,8 +59,9 @@
         "required": ["text", "status", "evidence"],
         "properties": {
           "text": { "type": "string", "minLength": 1 },
-          "status": { "enum": ["confirmed", "proposed"] },
-          "evidence": { "$ref": "#/$defs/evidence" }
+          "status": { "enum": ["confirmed", "proposed"], "description": "confirmed only with words of agreement in the cited segments; the app downgrades otherwise." },
+          "evidence": { "$ref": "#/$defs/evidence" },
+          "quote": { "$ref": "#/$defs/quote" }
         }
       }
     },
@@ -65,8 +74,9 @@
         "properties": {
           "action": { "type": "string", "minLength": 1 },
           "owner": { "type": ["string", "null"], "description": "null is shown as 'Not specified'." },
-          "deadline": { "type": ["string", "null"], "description": "null is shown as 'Not specified'." },
-          "evidence": { "$ref": "#/$defs/evidence" }
+          "deadline": { "type": ["string", "null"], "description": "null is shown as 'Not specified'. Hedges such as 'maybe' are kept." },
+          "evidence": { "$ref": "#/$defs/evidence" },
+          "quote": { "$ref": "#/$defs/quote" }
         }
       }
     },
@@ -103,8 +113,13 @@
       "required": ["text", "evidence"],
       "properties": {
         "text": { "type": "string", "minLength": 1 },
-        "evidence": { "$ref": "#/$defs/evidence" }
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "quote": { "$ref": "#/$defs/quote" }
       }
+    },
+    "quote": {
+      "type": ["string", "null"],
+      "description": "Exact words copied from a cited segment that support the item. The app checks that they occur there."
     }
   }
 }

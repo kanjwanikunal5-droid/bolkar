@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { startRecording, type Recording } from "./audio";
-import { chat, SPEECH_MODEL, transcribe } from "./groq";
+import { chat, resetModelChoice, SPEECH_MODEL, transcribe } from "./groq";
 import { addHistory, clearHistory, forgetKey, keyKind, loadHistory, saveKey, saveKeyOnDevice, unlockKey, unlockOnDevice, type HistoryItem } from "./keystore";
 import * as core from "./wasm/app_wasm.js";
 
@@ -160,7 +160,7 @@ function Unlock({ onDone, onReset }: { onDone: (key: string) => void; onReset: (
         <button className="primary" onClick={go}>
           Unlock
         </button>
-        <button onClick={() => void forgetKey().then(onReset)}>Remove key</button>
+        <button onClick={() => void forgetKey().then(() => { resetModelChoice(); onReset(); })}>Remove key</button>
       </div>
     </section>
   );
@@ -426,6 +426,7 @@ export function App() {
                     <button
                       onClick={() =>
                         void forgetKey().then(() => {
+                          resetModelChoice();
                           setKey("");
                           setStage("setup");
                         })

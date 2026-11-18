@@ -8,12 +8,8 @@
     <link rel="icon" href="./icon-192.png" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
     <title>%APP_NAME%</title>
-    <script>
-      try {
-        var t = localStorage.getItem("theme") || "system";
-        document.documentElement.dataset.theme = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-      } catch (e) {}
-    </script>
+    <script src="./theme.js"></script>
+
   </head>
   <body>
     <div id="root"></div>

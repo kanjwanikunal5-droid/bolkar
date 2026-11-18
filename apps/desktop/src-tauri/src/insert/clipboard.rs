@@ -171,14 +171,38 @@ pub fn write_private(text: &str, html: Option<&str>) -> Result<u32, String> {
             set_bytes(registered(w!("HTML Format")), &cf_html(fragment))?;
         }
         // Documented by Microsoft: presence of this format excludes the content from
-        // clipboard history and from cloud sync.
-        let _ = set_bytes(
-            registered(w!("ExcludeClipboardContentFromMonitorProcessing")),
-            &[0],
-        );
+        // clipboard history and from cloud sync. A failure is not fatal (the text is still
+        // inserted) but is logged, because the text may then appear in Win+V history.
         let zero = 0u32.to_le_bytes();
-        let _ = set_bytes(registered(w!("CanIncludeInClipboardHistory")), &zero);
-        let _ = set_bytes(registered(w!("CanUploadToCloudClipboard")), &zero);
+        let failed: Vec<&str> = [
+            (
+                "ExcludeClipboardContentFromMonitorProcessing",
+                set_bytes(
+                    registered(w!("ExcludeClipboardContentFromMonitorProcessing")),
+                    &[0],
+                )
+                .is_err(),
+            ),
+            (
+                "CanIncludeInClipboardHistory",
+                set_bytes(registered(w!("CanIncludeInClipboardHistory")), &zero).is_err(),
+            ),
+            (
+                "CanUploadToCloudClipboard",
+                set_bytes(registered(w!("CanUploadToCloudClipboard")), &zero).is_err(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, err)| err.then_some(name))
+        .collect();
+        if !failed.is_empty() {
+            crate::diag::log(
+                "clipboard",
+                &format!(
+                    "privacy marker(s) not set, the text may appear in Win+V history: {failed:?}"
+                ),
+            );
+        }
     }
     // The sequence number only settles once the clipboard is closed, so close first.
     drop(guard);

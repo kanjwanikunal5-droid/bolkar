@@ -13,6 +13,10 @@ const READ_ONLY = new Set([
   "mic_status",
   "meeting_status",
   "get_insights",
+  "list_meetings",
+  "get_meeting",
+  "list_audio_devices",
+  "diagnostics_info",
 ]);
 
 /**
@@ -45,6 +49,8 @@ export interface Status {
   cloud_speech: boolean;
   gpu_on: boolean;
   gpu_present: boolean;
+  /** Other dictation apps running now (may use the same keys or the microphone). */
+  other_dictation_apps: string[];
 }
 
 export interface Dictation {
@@ -207,15 +213,11 @@ export const api = {
   learnTerms: (items: [string, string][]) => invoke<void>("learn_terms", { items }),
   setCloudAsr: (on: boolean, consent: boolean) => invoke<void>("set_cloud_asr", { on, consent }),
   micStatus: () => invoke<{ open: boolean; level: number }>("mic_status"),
+  diagnosticsInfo: () => invoke<{ enabled: boolean; path: string | null; bytes: number }>("diagnostics_info"),
+  exportDiagnostics: () => invoke<string>("export_diagnostics"),
+  deleteLogs: () => invoke<void>("delete_logs"),
+  revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 };
-
-export interface MeetingLive {
-  recording: boolean;
-  seconds: number;
-  mic_level: number;
-  system_level: number;
-  problems: string[];
-}
 
 export interface Segment {
   id: string;
@@ -225,19 +227,104 @@ export interface Segment {
   text: string;
 }
 
-export interface MeetingResult {
+export interface MeetingLive {
+  recording: boolean;
+  seconds: number;
+  mic_level: number;
+  system_level: number;
+  problems: string[];
+  mic_device: string;
+  system_device: string;
+  live: { segments: Segment[]; mode: "starting" | "live" | "after"; error: string | null };
+}
+
+export type Check = "linked" | "quoted" | "needs_review";
+
+export interface Point {
+  text: string;
+  evidence: string[];
+  quote?: string | null;
+  check?: Check;
+  note?: string | null;
+}
+
+export interface Summary {
+  overview: { title: string; date: string | null; duration_min: number | null; participants: string[]; purpose: string | null };
+  executive_summary: Point[];
+  topics: { title: string; narrative: Point | null; points: Point[] }[];
+  decisions: { text: string; status: "confirmed" | "proposed"; evidence: string[]; quote?: string | null; check?: Check; note?: string | null }[];
+  action_items: {
+    action: string;
+    owner: string | null;
+    deadline: string | null;
+    evidence: string[];
+    quote?: string | null;
+    check?: Check;
+    deadline_tentative?: boolean;
+    note?: string | null;
+  }[];
+  risks: Point[];
+  open_questions: Point[];
+  numbers: { value: string; context: string; evidence: string[] }[];
+  next_steps: Point[];
+  takeaway: Point | null;
+}
+
+export interface ViewSegment extends Segment {
+  original: string;
+  edited: boolean;
+}
+
+export interface MeetingView {
   id: string;
-  segments: Segment[];
-  summary: unknown | null;
+  title: string;
+  started_at: string;
+  duration_ms: number;
+  status: "summarised" | "transcribed" | "interrupted" | string;
+  has_audio: boolean;
+  segments: ViewSegment[];
+  thoughts: [number, string][];
+  summary: Summary | null;
   dropped: string[];
+  flags: string[];
   markdown: string;
   note: string | null;
+  problems: string[];
+}
+
+export interface MeetingRow {
+  id: string;
+  title: string;
+  started_at: string;
+  duration_ms: number;
+  status: string;
+  has_audio: boolean;
+  has_summary: boolean;
+  segments: number;
+}
+
+export interface Devices {
+  inputs: string[];
+  outputs: string[];
+  default_input: string | null;
+  default_output: string | null;
 }
 
 export const meetings = {
-  start: (mic: boolean, system: boolean, consent: boolean) => invoke<void>("start_meeting", { mic, system, consent }),
+  devices: () => invoke<Devices>("list_audio_devices"),
+  start: (mic: boolean, system: boolean, consent: boolean, micDevice: string, systemDevice: string) =>
+    invoke<void>("start_meeting", { mic, system, consent, micDevice, systemDevice }),
   status: () => invoke<MeetingLive | null>("meeting_status"),
-  stop: (title: string, thoughts: [number, string][]) => invoke<MeetingResult>("stop_meeting", { title, thoughts }),
+  stop: (title: string, thoughts: [number, string][]) => invoke<MeetingView>("stop_meeting", { title, thoughts }),
+  list: (query = "") => invoke<MeetingRow[]>("list_meetings", { query }),
+  get: (id: string) => invoke<MeetingView>("get_meeting", { id }),
+  rename: (id: string, title: string) => invoke<MeetingView>("rename_meeting", { id, title }),
+  editLine: (id: string, line: string, text: string) => invoke<MeetingView>("edit_meeting_line", { id, line, text }),
+  rewriteNotes: (id: string) => invoke<MeetingView>("rewrite_meeting_notes", { id }),
+  transcribeAgain: (id: string) => invoke<MeetingView>("transcribe_saved_meeting", { id }),
+  exportNotes: (id: string, format: "md" | "txt") => invoke<string>("export_meeting", { id, format }),
+  remove: (id: string) => invoke<void>("delete_meeting", { id }),
+  removeAll: () => invoke<number>("delete_all_meetings"),
 };
 
 /** Tauri rejects with a plain string; show it as-is. */

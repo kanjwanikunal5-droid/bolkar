@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **16 November 2026** (versions 0.4.0 and 0.4.1 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **17 November 2026** (versions 0.4.0, 0.4.1 and 0.4.2 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -651,10 +651,88 @@ Done at the owner's request ("delete the earlier versions and install the newest
   from the internal app id and are never shown in the app. Changing the id would mean moving
   1.6 GB of data, so it was left alone.
 
+## 17 November 2026: version 0.4.2 - audit remediation
+
+An independent review of 0.4.1 (ChatGPT, from the review pack: source, installer, screenshots,
+audio, logs) scored it 5.4/10 and listed 21 findings plus an improvement prompt. Every finding
+was checked against the code first; all were real. What was fixed, how it was tested and what
+was not done is in `docs/REMEDIATION_PLAN_0.4.2.md`; the full report is
+`docs/0.4.2_FINAL_REMEDIATION_REPORT.md`. In short:
+
+- Meeting transcription no longer passes "en-hinglish"/"hinglish" to Whisper (typed language
+  modes; English or Hindi+Roman per piece).
+- Dictation is natural prose by default; lists only when spoken ("first ..., second ...",
+  "bullet point"); hands-free bullets are now an opt-in setting.
+- Meeting notes: a paragraph per topic, honest checks (quote found / check this, tentative
+  deadlines, "confirmed" only with agreement), long meetings in windows with retry on rate
+  limits, near-live transcript, sentence-level time stamps, "Microphone"/"System audio" labels.
+- Meeting library (search, open, rename, correct lines, notes again, transcribe again, export,
+  delete, interrupted-recording recovery) and separate retention for meeting audio, history and
+  meetings, with real deletion.
+- Recorder errors shown instead of swallowed; device choice; all sample formats.
+- Diagnostics log (content-free) with export; warning when other dictation apps run.
+- Web app: key really deleted, CSP, safer Groq parsing. Android recorder stop fixed.
+- Found during testing and fixed: Groq answered one Hinglish clip in capitals only.
+
+### Accuracy, measured 17-18 Nov 2026 (synthetic Windows voices Heera and Ravi; no real voices)
+
+All 102 supplied clips, scored with `wer` (same normalisation both sides). "App route" = the
+release build with the owner's settings (Groq whisper-large-v3 + AI clean-up), run quietly one
+clip at a time. "Local Turbo" = whisper large-v3-turbo on this laptop's GPU, English/Hinglish
+decided per clip (batch tool), raw text before clean-up.
+
+| Set | Clips / words | Route | WER | Tolerant WER | CER | Hindi letters in output |
+|---|---|---|---|---|---|---|
+| English | 30 / 322 | App route, final text | 0.62% | 0.62% | 0.34% | 0 |
+| English | 30 / 322 | Local Turbo, raw | 0.93% | 0.93% | 0.62% | 0 |
+| Hinglish (30 sentences x 2 voices) | 60 / 594 | App route, raw | 21.38% | 18.86% | 6.45% | - |
+| Hinglish (30 sentences x 2 voices) | 60 / 594 | App route, final text | 20.03% | 17.68% | 6.35% | 0 |
+| Hinglish (30 sentences x 2 voices) | 60 / 594 | Local Turbo, raw | 41.41% | 36.03% | 11.94% | 0 |
+| Hinglish (6 sentences x 2 voices) | 12 / 132 | App route, final text | 24.24% | 22.73% | 7.06% | 0 |
+| Hinglish (6 sentences x 2 voices) | 12 / 132 | Local Turbo, raw | 31.82% | 26.52% | 7.98% | 0 |
+
+Honest notes: the earlier best Hinglish figure (13.5%) was the female voice only on 30 clips;
+on all 60 clips the app route is 20.0%. Synthetic voices are not people: these numbers are for
+comparing versions, not a promise for real speech. Known bad clip h12 is still wrong ("Weekend
+PE Movie Dekne Chalankya."). Median recognition time in the app route: 455 ms (English), 642 ms
+and 627 ms (Hinglish sets), upload included.
+### Meeting tests (quiet app test)
+
+| Meeting (synthetic) | Audio | Live pass | Final pass | Notes | In library | Marks / removed |
+|---|---|---|---|---|---|---|
+| English finance review, 13 lines, 4 voices | 87 s | 10 lines, 2.2 s | 3 lines, 0.7 s | 4.6 s | yes | 0 / 0 |
+| Hinglish, 15 sentences | 85 s | 4 lines, 2.3 s | 1 line, 0.7 s | 22.7 s (one rate-limit retry) | yes | 7 / 2 |
+| Mixed English + Hinglish, 12 sentences | 64 s | 8 lines, 1.4 s | 4 lines, 0.7 s | 63.9 s (rate-limit retries) | yes | 1 / 2 |
+
+English notes: one paragraph per topic, decision "approve 50,000 rupees" kept its condition
+(return on investment above three times) and is Confirmed ("Agreed"), owners Priya / Rahul
+with "next Friday" / "the 18th", "I am not sure yet" stayed an open question. Each transcript
+line matched one spoken sentence (sentence-level time stamps). Mixed meeting: every English
+line came out in English and every Hinglish line in Roman Hinglish. The checks removed "3 PM"
+(the AI's guess for a mis-heard "saat baje") and, wrongly, "2 days" for "do din" (Hindi number
+words are not read as numbers, on purpose: "do" is also English). Hinglish meeting marks are
+mostly real problems of the synthetic Hinglish transcript ("subahdaas" for "subah das").
+Before retries were added, the free Groq limit made two of these note runs fail; the
+transcript was kept each time.
+### Checks run
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo test --workspace` | 179 passed, 0 failed, 2 ignored |
+| `pnpm exec tsc --noEmit` (desktop, web) | clean |
+| `pnpm build` (web) | built; CSP present in `dist/index.html` |
+| `pnpm tauri build` | `Speak Flow_0.4.2_x64-setup.exe` built |
+| Desktop UI in the browser preview (sample data) | Meeting record + library + detail, Settings > Privacy and Writing, Home warning checked; no new console errors |
+| Web key store in a real browser (dev server) | save / unlock / wrong passphrase / forget: as expected, no records left |
+| Android build | not run locally (no Android SDK on this laptop); GitHub CI builds it |
+
 ## Measured accuracy per language
 
-**No scored figures yet.** The owner's 5 voice notes have no reference text (see above). No
-accuracy figure is shown anywhere in the app. Only English and Hinglish are worked on, by the
+**Real voices: no scored figures yet.** The owner's 5 voice notes have no corrected reference
+text (see above). Synthetic-voice figures for all 102 supplied clips are in the 0.4.2 section
+above. No accuracy figure is shown anywhere in the app. Only English and Hinglish are worked on, by the
 owner's decision (14 Nov 2026); no other Indian languages are being added or measured.
 
 ## Costs so far

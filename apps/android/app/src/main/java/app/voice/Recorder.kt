@@ -21,10 +21,16 @@ class Recorder {
     @Volatile var level = 0f
         private set
 
+    /** Why recording stopped by itself (the microphone failed), or null. */
+    @Volatile var error: String? = null
+        private set
+
     /** False when the microphone could not be opened (no permission, or in use). */
     @SuppressLint("MissingPermission") // checked by the caller
     fun start(): Boolean {
+        error = null
         val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (min <= 0) return false
         val r = try {
             AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
@@ -40,35 +46,72 @@ class Recorder {
             r.release()
             return false
         }
+        // startRecording() can also fail (microphone taken by a call or another app).
+        try {
+            r.startRecording()
+        } catch (e: Exception) {
+            r.release()
+            return false
+        }
+        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            r.release()
+            return false
+        }
         synchronized(pcm) { pcm.reset() }
-        r.startRecording()
         record = r
         running = true
         thread = Thread {
             val chunk = ByteArray(RATE / 10 * 2)
             while (running) {
-                val n = r.read(chunk, 0, chunk.size)
-                if (n > 0) {
-                    synchronized(pcm) { pcm.write(chunk, 0, n) }
-                    level = rms(chunk, n)
+                val n = try {
+                    r.read(chunk, 0, chunk.size)
+                } catch (e: Exception) {
+                    AudioRecord.ERROR
+                }
+                when {
+                    n > 0 -> {
+                        synchronized(pcm) { pcm.write(chunk, 0, n) }
+                        level = rms(chunk, n)
+                    }
+                    n == 0 -> try {
+                        Thread.sleep(5)
+                    } catch (_: InterruptedException) {
+                        running = false
+                    }
+                    // Negative codes (ERROR, ERROR_INVALID_OPERATION, ERROR_BAD_VALUE,
+                    // ERROR_DEAD_OBJECT): stop instead of spinning at full processor load.
+                    else -> {
+                        if (running) error = "The microphone stopped working (code $n)."
+                        running = false
+                    }
                 }
             }
         }.also { it.start() }
         return true
     }
 
-    /** Stops and returns the recording as 16-bit PCM bytes. */
+    /**
+     * Stops and returns the recording as 16-bit PCM bytes. The reading thread has finished
+     * before the bytes are copied and the microphone is released.
+     */
     fun stop(): ByteArray {
         running = false
-        thread?.join(1000)
-        thread = null
-        record?.let {
-            try {
-                it.stop()
-            } catch (_: Exception) {
-            }
-            it.release()
+        val r = record
+        // stop() unblocks a read() that is waiting for audio.
+        try {
+            r?.stop()
+        } catch (_: Exception) {
         }
+        val t = thread
+        if (t != null) {
+            t.join(2000)
+            if (t.isAlive) {
+                t.interrupt()
+                t.join(500)
+            }
+        }
+        thread = null
+        r?.release()
         record = null
         level = 0f
         return synchronized(pcm) { pcm.toByteArray() }

@@ -23,6 +23,27 @@ async function put(key: string, value: unknown) {
   });
 }
 
+/** Removes the records themselves (not just their values), in one transaction. */
+async function del(...keys: string[]) {
+  const db = await idb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    for (const k of keys) tx.objectStore(STORE).delete(k);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Keys of the records in the store (for checks and tests). */
+export async function storedKeys(): Promise<string[]> {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(STORE).objectStore(STORE).getAllKeys();
+    req.onsuccess = () => resolve(req.result.map(String));
+    req.onerror = () => reject(req.error);
+  });
+}
+
 async function get<T>(key: string): Promise<T | undefined> {
   const db = await idb();
   return new Promise((resolve, reject) => {
@@ -60,6 +81,13 @@ export async function saveKey(apiKey: string, passphrase: string) {
  * "Remember on this device": the API key is encrypted with an AES key that the browser
  * creates as non-extractable and keeps in IndexedDB. No passphrase to type, and the raw
  * key is never stored in readable form. (A passphrase remains available for shared devices.)
+ *
+ * What this protects and what it does not: it keeps the key unreadable at rest (someone
+ * looking at the browser's stored data sees only encrypted bytes). It does NOT protect
+ * against malicious script running inside this web app's own page (for example through a
+ * cross-site-scripting bug): such script could ask the browser to decrypt with the same
+ * device key. That is why the page loads no third-party scripts and has a strict
+ * Content-Security-Policy. On a shared computer, use the passphrase option.
  */
 export async function saveKeyOnDevice(apiKey: string) {
   const deviceKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
@@ -100,9 +128,9 @@ export async function unlockKey(passphrase: string): Promise<string> {
   }
 }
 
+/** Deletes the encrypted key and the device key records from IndexedDB. */
 export async function forgetKey() {
-  await put("groq", undefined);
-  await put("devicekey", undefined);
+  await del("groq", "devicekey");
 }
 
 export interface HistoryItem {

@@ -175,8 +175,8 @@ function Banner({ go }: { go: Go }) {
           Speak in <em>points</em>
         </>
       ),
-      text: "Say “first thing…, second thing…” or “pehli baat…” and get a tidy numbered list. Hands-free turns separate requests into bullets.",
-      cta: "Points settings",
+      text: "Normal speech stays a natural paragraph. Say “first thing…, second thing…”, “pehli baat…” or “bullet point…” and you get a tidy list.",
+      cta: "List settings",
       photo: photoPoints,
       go: () => go("settings", "writing"),
     },
@@ -402,6 +402,12 @@ export function HomePage({
           <button className="btn small primary" onClick={() => go("settings", "speech")}>
             Fix it
           </button>
+        </div>
+      )}
+      {(status?.other_dictation_apps?.length ?? 0) > 0 && (
+        <div className="banner" role="alert">
+          <Icon.Info size={18} /> {status?.other_dictation_apps.join(" and ")} {status?.other_dictation_apps.length === 1 ? "is" : "are"} also running. If
+          Ctrl + Win does nothing or types twice, quit {status?.other_dictation_apps.length === 1 ? "it" : "them"} from the system tray.
         </div>
       )}
       <DailyGoal insights={insights} goal={goal} go={go} />

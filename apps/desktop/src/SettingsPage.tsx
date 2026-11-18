@@ -332,7 +332,7 @@ function Groq({ ai, refresh }: { ai: AiStatus | null; refresh: () => void }) {
         </SettingRow>
         <SettingRow
           title="AI clean-up"
-          help="The text (never the audio) is tidied: grammar, Hinglish spelling, self-corrections. Every answer is checked; anything that adds a number, name or link you did not say is thrown away."
+          help="The text (never the audio) is tidied: grammar, Hinglish spelling, self-corrections. Every answer is checked; anything that adds a number, name or link you did not say is thrown away. Also writes meeting notes: the meeting transcript is sent as text; meeting audio never leaves this computer."
         >
           <Switch
             label="AI clean-up"
@@ -393,14 +393,18 @@ function Writing({ settings, set }: { settings: Settings; set: Set }) {
         />
       </SettingRow>
       <SettingRow
-        title="Hands-free: write as points"
-        help="In hands-free mode (Ctrl + Win + H, or double-tap Ctrl + Win), several sentences come out as bullet points. “First thing ..., second thing ...” always becomes a numbered list."
+        title="Lists in hands-free mode"
+        help="Natural writing keeps connected sentences together as a paragraph. A list is made only when you speak one: “first ..., second ...”, “pehli baat ...”, or “bullet point ...”. Auto-detect also turns short, separate requests into bullets. Always makes every hands-free dictation of two or more sentences into bullets."
       >
-        <Switch
-          label="Hands-free: write as points"
-          checked={settings.handsfree_points !== "off"}
-          onChange={(on) => set("handsfree_points", on ? "on" : "off", on ? "Hands-free points on" : "Hands-free points off")}
-        />
+        <select
+          aria-label="Lists in hands-free mode"
+          value={["natural", "auto", "always"].includes(settings.list_format ?? "") ? settings.list_format : "natural"}
+          onChange={(e) => set("list_format", e.target.value, "List setting saved")}
+        >
+          <option value="natural">Natural writing (recommended)</option>
+          <option value="auto">Auto-detect lists</option>
+          <option value="always">Always use bullets</option>
+        </select>
       </SettingRow>
       <SettingRow title="Spoken commands" help="Say “new line”, “full stop” or “bullet point” while dictating.">
         <Switch label="Spoken commands" checked={settings.spoken_commands === "true"} onChange={(on) => set("spoken_commands", String(on), on ? "Spoken commands on" : "Spoken commands off")} />
@@ -411,23 +415,124 @@ function Writing({ settings, set }: { settings: Settings; set: Set }) {
 
 /* ---------- Privacy ---------- */
 
+function Keep({ id, label, value, set, choices }: { id: string; label: string; value: string | undefined; set: Set; choices: [string, string][] }) {
+  return (
+    <select aria-label={label} value={value ?? choices[0][0]} onChange={(e) => set(id, e.target.value, `${label}: saved`)}>
+      {choices.map(([v, l]) => (
+        <option key={v} value={v}>
+          {l}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+const DAYS: [string, string][] = [
+  ["1", "1 day"],
+  ["7", "7 days"],
+  ["30", "30 days"],
+  ["90", "90 days"],
+  ["365", "1 year"],
+  ["0", "Keep forever"],
+];
+
+function Diagnostics({ settings, set }: { settings: Settings; set: Set }) {
+  const toast = useToast();
+  const [info, setInfo] = useState<{ enabled: boolean; path: string | null; bytes: number } | null>(null);
+  const refresh = useCallback(() => void api.diagnosticsInfo().then(setInfo, () => setInfo(null)), []);
+  useEffect(refresh, [refresh, settings.diagnostics]);
+  return (
+    <div className="card">
+      <div className="card-title">
+        <h2>Diagnostics log</h2>
+      </div>
+      <p className="dim" style={{ marginTop: 0 }}>
+        A small file on this computer that records what happened (versions, steps, timings, error messages) so problems can be found. It never contains
+        what you said, transcripts, meeting titles, names or keys. At most 1 MB.
+      </p>
+      <SettingRow title="Keep a diagnostics log" help={info ? `Now ${(info.bytes / 1024).toFixed(0)} KB.` : ""}>
+        <Switch
+          label="Keep a diagnostics log"
+          checked={settings.diagnostics !== "off"}
+          onChange={(on) => set("diagnostics", on ? "on" : "off", on ? "Diagnostics log on" : "Diagnostics log off")}
+        />
+      </SettingRow>
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        <button className="btn small" disabled={!info?.path} onClick={() => info?.path && void api.revealFile(info.path).catch((e) => toast(errorText(e), true))}>
+          Open log folder
+        </button>
+        <button
+          className="btn small"
+          onClick={() =>
+            void api.exportDiagnostics().then(
+              (p) => {
+                toast("Diagnostics saved in Downloads");
+                void api.revealFile(p);
+              },
+              (e) => toast(errorText(e), true),
+            )
+          }
+        >
+          Save diagnostics for support
+        </button>
+        <button
+          className="btn ghost small danger"
+          onClick={() =>
+            void api.deleteLogs().then(
+              () => {
+                toast("Diagnostics log deleted");
+                refresh();
+              },
+              (e) => toast(errorText(e), true),
+            )
+          }
+        >
+          Delete log
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Privacy({ settings, set }: { settings: Settings; set: Set }) {
   return (
     <>
       <div className="card">
-        <SettingRow title="Keep recordings" help="Lets you replay or re-transcribe a dictation. Stored on this computer only.">
-          <Switch label="Keep recordings" checked={settings.save_audio === "true"} onChange={(on) => set("save_audio", String(on), on ? "Recordings kept" : "Recordings not kept")} />
+        <div className="card-title">
+          <h2>Stored on this computer</h2>
+        </div>
+        <SettingRow title="Keep dictation recordings" help="Lets you replay or re-transcribe a dictation.">
+          <Switch label="Keep dictation recordings" checked={settings.save_audio === "true"} onChange={(on) => set("save_audio", String(on), on ? "Recordings kept" : "Recordings not kept")} />
         </SettingRow>
-        <SettingRow title="Delete recordings after" help="Text history is kept; only the audio files are deleted.">
-          <select aria-label="Delete recordings after" value={settings.audio_retention_days ?? "7"} onChange={(e) => set("audio_retention_days", e.target.value, "Saved")}>
-            <option value="1">1 day</option>
-            <option value="7">7 days</option>
-            <option value="30">30 days</option>
-            <option value="90">90 days</option>
-          </select>
+        <SettingRow title="Delete dictation audio after" help="Only the audio files of dictations. Their text stays in History.">
+          <Keep id="audio_retention_days" label="Delete dictation audio after" value={settings.audio_retention_days ?? "7"} set={set} choices={DAYS.slice(0, 4)} />
         </SettingRow>
+        <SettingRow title="Delete meeting audio after" help="Only the meeting recordings (WAV files). Transcripts and notes stay in Past meetings.">
+          <Keep id="meeting_audio_retention_days" label="Delete meeting audio after" value={settings.meeting_audio_retention_days ?? "30"} set={set} choices={DAYS} />
+        </SettingRow>
+        <SettingRow title="Delete dictation history after" help="The text of old dictations, with any audio left.">
+          <Keep id="history_retention_days" label="Delete dictation history after" value={settings.history_retention_days ?? "0"} set={set} choices={[["0", "Keep forever"], ...DAYS.slice(1, 5)]} />
+        </SettingRow>
+        <SettingRow title="Delete meetings after" help="Whole meetings: audio, transcript, your notes and the AI notes.">
+          <Keep id="meeting_retention_days" label="Delete meetings after" value={settings.meeting_retention_days ?? "0"} set={set} choices={[["0", "Keep forever"], ...DAYS.slice(1, 5)]} />
+        </SettingRow>
+        <p className="dim" style={{ fontSize: "0.72rem", marginBottom: 0 }}>
+          Checked when the app starts and every 6 hours. A meeting that is being recorded is never deleted. If a file cannot be deleted, it stays listed and the
+          failure is noted in the diagnostics log.
+        </p>
+      </div>
+      <div className="card">
+        <div className="card-title">
+          <h2>Sent to other services</h2>
+        </div>
+        <p className="dim" style={{ marginTop: 0 }}>
+          With speech recognition on this computer, your audio never leaves it. Only if you turn them on in Groq &amp; AI: <strong>Groq speech recognition</strong>{" "}
+          sends the audio of each dictation to Groq; <strong>AI clean-up</strong> sends the text of each dictation, and the meeting transcript for notes. Meeting
+          audio is always recognised on this computer. Each upload is listed below.
+        </p>
       </div>
       <UploadsCard />
+      <Diagnostics settings={settings} set={set} />
     </>
   );
 }

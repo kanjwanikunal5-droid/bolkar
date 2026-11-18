@@ -114,6 +114,21 @@ pub fn filter_text(text: &str, quiet: bool) -> String {
     collapse_repeats(&cleaned)
 }
 
+/// The segments that pass the same checks as [`filter`], each with its own time stamps
+/// (milliseconds from the start of the audio that was recognised).
+pub fn kept_segments(segments: &[Segment]) -> Vec<(i64, i64, String)> {
+    segments
+        .iter()
+        .filter_map(|seg| {
+            let text = BRACKETED.replace_all(&seg.text, " ");
+            let text = SPACES.replace_all(text.trim(), " ").into_owned();
+            let drop = seg.no_speech_prob > NO_SPEECH_DROP
+                || (seg.no_speech_prob > NO_SPEECH_SUSPICIOUS && is_silence_phrase(&text));
+            (!text.is_empty() && !drop).then(|| (seg.start_ms, seg.end_ms, collapse_repeats(&text)))
+        })
+        .collect()
+}
+
 /// Returns the kept text and the list of dropped segment texts.
 pub fn filter(segments: &[Segment]) -> (String, Vec<String>) {
     let mut kept: Vec<String> = Vec::new();

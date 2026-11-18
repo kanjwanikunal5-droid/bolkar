@@ -59,8 +59,11 @@ Kunal, second thing my roll number is 52" becomes
 2. My roll number is 52
 ```
 
-In **hands-free mode** (`Ctrl` + `Win` + `H`) the app also turns two or more separate items into
-bullet points on its own. Turn that off in Settings -> Writing -> "Hands-free: write as points".
+Say "bullet point ..." / "next point ..." for bullets. Everything else stays a **natural
+paragraph**: connected sentences are never cut into one bullet each. If you want hands-free
+dictation (`Ctrl` + `Win` + `H`) to turn short, separate requests into bullets by itself, choose
+Settings -> Writing -> "Lists in hands-free mode" -> **Auto-detect lists** (or **Always use
+bullets**). The default is **Natural writing**.
 
 ## English and Hinglish
 
@@ -121,13 +124,28 @@ web page type into other apps, so copy and paste is the way.
 
 ## Meeting notes
 
-1. Open the app -> **Meeting notes**. Give a title, choose **My microphone** and/or
-   **Computer sound** (for Zoom, Google Meet, Teams), tick the consent box, **Start recording**.
-2. Type your own notes in **My thoughts** while you listen; they are kept exactly as written.
-3. **Stop and make notes.** The recording is transcribed on this computer; with AI clean-up
-   on, you get topics, decisions, action items (owner and deadline "Not specified" unless
-   someone said them), numbers and next steps, each with a time. **Copy notes** to paste them
-   anywhere. Use headphones if you can.
+1. Open the app -> **Meeting notes** -> **Record**. Give a title, choose the **Microphone** and/or
+   **System audio** (for Zoom, Google Meet, Teams) and, if you like, which device, switch on
+   the permission switch, **Start recording**. Use headphones if you can.
+2. With the graphics card in use, the **transcript so far** appears while you record (new lines
+   about every 30 seconds). Without it, the transcript is made when you stop, so the computer
+   stays fast during the call.
+3. Type your own notes in **My thoughts** while you listen; they are kept exactly as written.
+4. **Stop and make notes.** The rest is transcribed on this computer (meeting audio never leaves
+   it). With AI clean-up on, you get a short paragraph per topic, decisions (Confirmed only when
+   people agreed, otherwise Proposed), action items (owner and deadline "Not specified" unless
+   someone said them; "tentative" when they said "maybe"), numbers and next steps. Each item
+   has its time; click it to jump to the transcript line. **Quote found** means its exact words
+   are in the transcript; **Check this** means a number, quote or word did not match. The app
+   checks links, quotes, numbers, names and dates, not the meaning, so read important items
+   against the transcript. Long meetings are summarised in parts and joined.
+5. **Past meetings** lists every saved meeting (search by title, transcript or notes). Open one
+   to rename it, correct a transcript line (the original is kept), **Write notes again**,
+   **Transcribe again**, **Save as Markdown / text** (to Downloads\Speak Flow) or **Delete** it
+   with its audio. If the app closed during a recording, the meeting appears as
+   **Interrupted**: open it and choose **Transcribe recording**.
+
+"Microphone" and "System audio" are the two sound sources, not people.
 
 ## Teach it your words
 
@@ -172,10 +190,19 @@ Choose **Literal** in Settings to keep every word exactly.
 
 ## Privacy
 
-Speech is recognised on your computer and audio never leaves it. Text is sent only if you
-switch on AI clean-up. Dictations are kept out
-of Windows clipboard history (Win + V). Recordings are kept for 7 days so a dictation can be
-replayed, then deleted; you can switch this off in Settings.
+Without Groq, speech is recognised on your computer and audio never leaves it. With **Groq
+speech recognition** on, the audio of each dictation is sent to Groq; with **AI clean-up** on,
+the text of each dictation (and a meeting's transcript, for its notes) is sent. Meeting audio
+always stays on this computer. Dictations are kept out of Windows clipboard history (Win + V).
+
+Settings -> Privacy & data sets how long things are kept: dictation audio (7 days by default),
+meeting audio (30 days), dictation history and meetings (forever unless you choose a limit). It
+also lists every upload, and has the **diagnostics log**: a small file with what happened
+(steps, timings, errors), never what you said. **Save diagnostics for support** puts a copy in
+Downloads\Speak Flow to send to whoever helps you.
+
+If another dictation app (for example Wispr Flow or Typeless) is running, Home shows a
+warning: it may use the same keys. Quit it from the system tray if Ctrl + Win misbehaves.
 
 ## Change the language or text size
 

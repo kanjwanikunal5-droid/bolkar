@@ -1,9 +1,9 @@
 // Offline shell: the app's own files are cached so it opens without a connection.
 // Requests to speech or AI services are never cached.
-const CACHE = "bolkar-shell-v1";
+const CACHE = "shell-v2";
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(["./", "./index.html", "./manifest.webmanifest"])));
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(["./", "./index.html", "./theme.js", "./manifest.webmanifest"])));
   self.skipWaiting();
 });
 

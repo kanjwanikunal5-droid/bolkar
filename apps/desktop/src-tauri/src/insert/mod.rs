@@ -157,11 +157,15 @@ pub fn insert_rich(text: &str, html: Option<&str>, target: &Target) -> Outcome {
     };
     let seq = match clipboard::write_private(text, html) {
         Ok(seq) => seq,
-        Err(_) => {
+        Err(e) => {
+            // The write may have failed after the clipboard was emptied: put the user's
+            // previous clipboard back before typing the text instead.
+            crate::diag::log("clipboard", &format!("write failed, typing instead: {e}"));
+            let _ = clipboard::restore(&snapshot);
             return match keys::type_text(text) {
                 Ok(()) => Outcome::Typed,
                 Err(message) => Outcome::Failed { message },
-            }
+            };
         }
     };
     // Last check, immediately before the key press: another window may have jumped in

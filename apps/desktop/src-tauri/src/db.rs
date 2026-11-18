@@ -42,6 +42,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE dictations ADD COLUMN fixed INT NOT NULL DEFAULT 0;
     "#,
+    // v4 (0.4.2): meeting library. Hand-corrected transcript lines are stored next to the
+    // recogniser's original, which is never overwritten.
+    r#"
+    ALTER TABLE segments ADD COLUMN edited_text TEXT;
+    CREATE INDEX IF NOT EXISTS segments_meeting ON segments(meeting_id, start_ms);
+    CREATE INDEX IF NOT EXISTS summaries_meeting ON summaries(meeting_id, version);
+    "#,
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -253,10 +260,13 @@ pub fn revoke_consent(conn: &Connection, provider: &str) -> Result<(), String> {
 
 /// Local-only log. Every upload is written here ("Data that left this device").
 pub fn log_event(conn: &Connection, kind: &str, detail: &str) {
-    let _ = conn.execute(
+    crate::diag::log(kind, detail);
+    if let Err(e) = conn.execute(
         "INSERT INTO events(at, kind, detail) VALUES(?1, ?2, ?3)",
         params![now(), kind, detail],
-    );
+    ) {
+        crate::diag::log("database", &format!("could not record an event: {e}"));
+    }
 }
 
 pub fn list_events(conn: &Connection, kind: &str, limit: u32) -> Result<Vec<EventRow>, String> {
@@ -335,7 +345,11 @@ pub fn save_meeting(
             params![
                 format!("{id}:{}", s.id),
                 id,
-                if s.speaker == "Me" { "mic" } else { "system" },
+                if s.speaker == "Me" || s.speaker == app_core::summary::MIC {
+                    "mic"
+                } else {
+                    "system"
+                },
                 s.speaker,
                 s.start_ms as i64,
                 s.end_ms as i64,
@@ -360,6 +374,379 @@ pub fn save_meeting(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
+}
+
+// ---------- Meeting library ----------
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MeetingRow {
+    pub id: String,
+    pub title: String,
+    pub started_at: String,
+    pub duration_ms: i64,
+    /// "summarised", "transcribed" or "interrupted".
+    pub status: String,
+    pub has_audio: bool,
+    pub has_summary: bool,
+    pub segments: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SavedSegment {
+    pub id: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub speaker: String,
+    /// What the recogniser wrote (never changed).
+    pub original: String,
+    /// The user's correction, if any.
+    pub edited: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedMeeting {
+    pub row: MeetingRow,
+    pub mic_path: Option<String>,
+    pub system_path: Option<String>,
+    pub segments: Vec<SavedSegment>,
+    pub thoughts: Vec<(u64, String)>,
+    /// The current summary JSON, if any.
+    pub summary_json: Option<String>,
+}
+
+const MEETING_ROW: &str = "m.id, m.title, m.started_at, m.duration_ms, m.status,
+    (m.mic_track_path IS NOT NULL OR m.system_track_path IS NOT NULL),
+    EXISTS(SELECT 1 FROM summaries s WHERE s.meeting_id = m.id AND s.is_current = 1),
+    (SELECT COUNT(*) FROM segments g WHERE g.meeting_id = m.id)";
+
+fn row_to_meeting(r: &rusqlite::Row) -> rusqlite::Result<MeetingRow> {
+    Ok(MeetingRow {
+        id: r.get(0)?,
+        title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        started_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        duration_ms: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+        status: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        has_audio: r.get(5)?,
+        has_summary: r.get(6)?,
+        segments: r.get(7)?,
+    })
+}
+
+/// Saved meetings, newest first. `query` searches titles, transcript lines (original and
+/// corrected) and the notes.
+pub fn list_meetings(conn: &Connection, query: &str) -> Result<Vec<MeetingRow>, String> {
+    let q = query.trim();
+    let like = format!("%{}%", q.replace(['%', '_'], ""));
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {MEETING_ROW} FROM meetings m
+             WHERE ?1 = '' OR m.title LIKE ?2
+                OR EXISTS(SELECT 1 FROM segments g WHERE g.meeting_id = m.id
+                          AND (g.text LIKE ?2 OR g.edited_text LIKE ?2))
+                OR EXISTS(SELECT 1 FROM summaries s WHERE s.meeting_id = m.id
+                          AND s.is_current = 1 AND s.json LIKE ?2)
+             ORDER BY m.started_at DESC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![q, like], row_to_meeting)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn get_meeting(conn: &Connection, id: &str) -> Result<SavedMeeting, String> {
+    let (row, mic_path, system_path) = conn
+        .query_row(
+            &format!(
+                "SELECT {MEETING_ROW}, m.mic_track_path, m.system_track_path FROM meetings m WHERE m.id = ?1"
+            ),
+            [id],
+            |r| Ok((row_to_meeting(r)?, r.get(8)?, r.get(9)?)),
+        )
+        .map_err(|_| "That meeting no longer exists.".to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, start_ms, end_ms, speaker, text, edited_text FROM segments
+             WHERE meeting_id = ?1 ORDER BY start_ms, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let segments = stmt
+        .query_map([id], |r| {
+            let full: String = r.get(0)?;
+            Ok(SavedSegment {
+                id: full
+                    .split_once(':')
+                    .map_or(full.clone(), |(_, s)| s.to_string()),
+                start_ms: r.get(1)?,
+                end_ms: r.get(2)?,
+                speaker: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                original: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                edited: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT at_ms, text FROM thoughts WHERE meeting_id = ?1 ORDER BY at_ms")
+        .map_err(|e| e.to_string())?;
+    let thoughts = stmt
+        .query_map([id], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let summary_json = conn
+        .query_row(
+            "SELECT COALESCE(edited_json, json) FROM summaries WHERE meeting_id = ?1 AND is_current = 1
+             ORDER BY version DESC LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(SavedMeeting {
+        row,
+        mic_path,
+        system_path,
+        segments,
+        thoughts,
+        summary_json,
+    })
+}
+
+pub fn rename_meeting(conn: &Connection, id: &str, title: &str) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("The title cannot be empty.".into());
+    }
+    match conn.execute(
+        "UPDATE meetings SET title = ?2 WHERE id = ?1",
+        params![id, title],
+    ) {
+        Ok(1) => Ok(()),
+        Ok(_) => Err("That meeting no longer exists.".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Stores the user's correction of one transcript line. The original stays in `text`.
+/// An empty or unchanged correction removes the edit.
+pub fn edit_segment(
+    conn: &Connection,
+    meeting_id: &str,
+    segment_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    let full = format!("{meeting_id}:{segment_id}");
+    let original: String = conn
+        .query_row("SELECT text FROM segments WHERE id = ?1", [&full], |r| {
+            r.get(0)
+        })
+        .map_err(|_| "That transcript line no longer exists.".to_string())?;
+    let edited = (!text.trim().is_empty() && text.trim() != original.trim()).then(|| text.trim());
+    conn.execute(
+        "UPDATE segments SET edited_text = ?2 WHERE id = ?1",
+        params![full, edited],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Replaces the transcript of a meeting (used when an interrupted recording is transcribed).
+pub fn replace_segments(
+    conn: &Connection,
+    meeting_id: &str,
+    segments: &[app_core::summary::Segment],
+    status: &str,
+) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM segments WHERE meeting_id = ?1", [meeting_id])
+        .map_err(|e| e.to_string())?;
+    for s in segments {
+        tx.execute(
+            "INSERT INTO segments(id, meeting_id, track, speaker, start_ms, end_ms, text, is_final, engine)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 'local')",
+            params![
+                format!("{meeting_id}:{}", s.id),
+                meeting_id,
+                if s.speaker == "Me" || s.speaker == app_core::summary::MIC {
+                    "mic"
+                } else {
+                    "system"
+                },
+                s.speaker,
+                s.start_ms as i64,
+                s.end_ms as i64,
+                s.text
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "UPDATE meetings SET status = ?2 WHERE id = ?1",
+        params![meeting_id, status],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Saves a new version of the notes; older versions are kept but no longer current.
+pub fn save_summary_version(
+    conn: &Connection,
+    meeting_id: &str,
+    json: &str,
+    provider: &str,
+) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let version: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM summaries WHERE meeting_id = ?1",
+            [meeting_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE summaries SET is_current = 0 WHERE meeting_id = ?1",
+        [meeting_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO summaries(id, meeting_id, version, created_at, provider, json, edited_json, is_current)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL, 1)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            meeting_id,
+            version,
+            now(),
+            provider,
+            json
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE meetings SET status = 'summarised' WHERE id = ?1",
+        [meeting_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// A recording whose app stopped before the meeting was saved (crash, power cut).
+pub fn insert_interrupted(
+    conn: &Connection,
+    id: &str,
+    started_at: &str,
+    duration_ms: u64,
+    mic_path: Option<&str>,
+    system_path: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO meetings(id, title, type, attendees, languages, started_at, ended_at,
+            duration_ms, consent_confirmed, mic_track_path, system_track_path, status)
+         VALUES(?1, 'Interrupted recording', 'Meeting', '', '', ?2, NULL, ?3, 1, ?4, ?5, 'interrupted')",
+        params![id, started_at, duration_ms as i64, mic_path, system_path],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn meeting_exists(conn: &Connection, id: &str) -> bool {
+    conn.query_row("SELECT 1 FROM meetings WHERE id = ?1", [id], |_| Ok(()))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Deletes a meeting with its transcript, notes and summaries (one transaction). Returns its
+/// audio file paths so the caller can delete the files.
+pub fn delete_meeting(conn: &Connection, id: &str) -> Result<Vec<String>, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let paths: (Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT mic_track_path, system_track_path FROM meetings WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "That meeting no longer exists.".to_string())?;
+    for table in ["segments", "thoughts", "summaries"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE meeting_id = ?1"), [id])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.execute("DELETE FROM meetings WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok([paths.0, paths.1].into_iter().flatten().collect())
+}
+
+pub fn all_meeting_ids(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT id FROM meetings")
+        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .unwrap_or_default()
+}
+
+// ---------- Retention ----------
+
+/// Dictation audio files recorded before `before`: (dictation id, path).
+pub fn dictation_audio_before(conn: &Connection, before: &str) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT id, audio_path FROM dictations WHERE audio_path IS NOT NULL AND created_at < ?1",
+    )
+    .and_then(|mut s| {
+        s.query_map([before], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Called once the file is gone.
+pub fn clear_dictation_audio(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE dictations SET audio_path = NULL WHERE id = ?1",
+        [id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Meeting audio recorded before `before`: (meeting id, file paths).
+pub fn meeting_audio_before(conn: &Connection, before: &str) -> Vec<(String, Vec<String>)> {
+    conn.prepare(
+        "SELECT id, mic_track_path, system_track_path FROM meetings
+         WHERE (mic_track_path IS NOT NULL OR system_track_path IS NOT NULL) AND started_at < ?1",
+    )
+    .and_then(|mut s| {
+        s.query_map([before], |r| {
+            let a: Option<String> = r.get(1)?;
+            let b: Option<String> = r.get(2)?;
+            Ok((r.get(0)?, [a, b].into_iter().flatten().collect()))
+        })?
+        .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Called once the files are gone. The transcript and notes stay.
+pub fn clear_meeting_audio(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE meetings SET mic_track_path = NULL, system_track_path = NULL WHERE id = ?1",
+        [id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn dictations_before(conn: &Connection, before: &str) -> Vec<String> {
+    conn.prepare("SELECT id FROM dictations WHERE created_at < ?1")
+        .and_then(|mut s| s.query_map([before], |r| r.get(0))?.collect())
+        .unwrap_or_default()
+}
+
+pub fn meetings_before(conn: &Connection, before: &str) -> Vec<String> {
+    conn.prepare("SELECT id FROM meetings WHERE started_at < ?1")
+        .and_then(|mut s| s.query_map([before], |r| r.get(0))?.collect())
+        .unwrap_or_default()
 }
 
 /// Saves a hand-corrected text. The recogniser's original stays untouched in `raw_text`.
@@ -583,21 +970,6 @@ pub fn words_since(conn: &Connection, since: &str) -> i64 {
     .unwrap_or(0)
 }
 
-/// Audio files of dictations older than `before`; their paths are cleared in the database.
-pub fn expire_audio(conn: &Connection, before: &str) -> Vec<String> {
-    let paths: Vec<String> = conn
-        .prepare(
-            "SELECT audio_path FROM dictations WHERE audio_path IS NOT NULL AND created_at < ?1",
-        )
-        .and_then(|mut s| s.query_map([before], |r| r.get(0))?.collect())
-        .unwrap_or_default();
-    let _ = conn.execute(
-        "UPDATE dictations SET audio_path = NULL WHERE audio_path IS NOT NULL AND created_at < ?1",
-        [before],
-    );
-    paths
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,6 +1085,133 @@ mod tests {
     }
 
     #[test]
+    fn meeting_library_lifecycle() {
+        use app_core::summary::{Segment, MIC, SYSTEM};
+        let conn = open_in_memory().unwrap();
+        let segs = vec![
+            Segment {
+                id: "s1".into(),
+                start_ms: 0,
+                end_ms: 4000,
+                speaker: MIC.into(),
+                text: "Sales went up 12 percent.".into(),
+            },
+            Segment {
+                id: "s2".into(),
+                start_ms: 4200,
+                end_ms: 9000,
+                speaker: SYSTEM.into(),
+                text: "Priya will send the report.".into(),
+            },
+        ];
+        save_meeting(
+            &conn,
+            "m1",
+            "Weekly review",
+            "2026-11-01T10:00:00Z",
+            9000,
+            Some("C:/data/meetings/m1/mic.wav"),
+            Some("C:/data/meetings/m1/system.wav"),
+            &segs,
+            &[(3000, "ask about margin".into())],
+            Some("{\"overview\":{\"title\":\"Weekly review\"}}"),
+            "groq",
+        )
+        .unwrap();
+        save_meeting(
+            &conn,
+            "m2",
+            "Hiring sync",
+            "2026-11-15T10:00:00Z",
+            1000,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            "",
+        )
+        .unwrap();
+        insert_interrupted(
+            &conn,
+            "m3",
+            "2026-11-16T09:00:00Z",
+            60000,
+            Some("x.wav"),
+            None,
+        )
+        .unwrap();
+
+        let all = list_meetings(&conn, "").unwrap();
+        assert_eq!(
+            all.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["m3", "m2", "m1"]
+        );
+        assert_eq!(all[0].status, "interrupted");
+        assert!(all[2].has_audio && all[2].has_summary && all[2].segments == 2);
+        assert_eq!(
+            list_meetings(&conn, "priya").unwrap()[0].id,
+            "m1",
+            "searches the transcript"
+        );
+        assert_eq!(
+            list_meetings(&conn, "hiring").unwrap()[0].id,
+            "m2",
+            "searches titles"
+        );
+
+        rename_meeting(&conn, "m1", "Weekly finance review").unwrap();
+        edit_segment(&conn, "m1", "s2", "Priya will send the margin report.").unwrap();
+        let m = get_meeting(&conn, "m1").unwrap();
+        assert_eq!(m.row.title, "Weekly finance review");
+        assert_eq!(
+            m.segments[1].original, "Priya will send the report.",
+            "original kept"
+        );
+        assert_eq!(
+            m.segments[1].edited.as_deref(),
+            Some("Priya will send the margin report.")
+        );
+        assert_eq!(m.thoughts, [(3000, "ask about margin".to_string())]);
+        assert!(list_meetings(&conn, "margin report")
+            .unwrap()
+            .iter()
+            .any(|x| x.id == "m1"));
+
+        save_summary_version(&conn, "m1", "{\"v\":2}", "groq").unwrap();
+        assert_eq!(
+            get_meeting(&conn, "m1").unwrap().summary_json.as_deref(),
+            Some("{\"v\":2}")
+        );
+
+        let due = meeting_audio_before(&conn, "2026-11-10T00:00:00Z");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].1.len(), 2);
+        clear_meeting_audio(&conn, "m1").unwrap();
+        assert!(!get_meeting(&conn, "m1").unwrap().row.has_audio);
+        assert_eq!(
+            get_meeting(&conn, "m1").unwrap().segments.len(),
+            2,
+            "transcript stays"
+        );
+
+        assert_eq!(delete_meeting(&conn, "m3").unwrap(), ["x.wav"]);
+        assert!(delete_meeting(&conn, "m1").unwrap().is_empty());
+        for table in ["segments", "thoughts", "summaries"] {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE meeting_id='m1'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{table} rows removed with the meeting");
+        }
+        assert_eq!(all_meeting_ids(&conn), ["m2"]);
+        assert!(get_meeting(&conn, "m1").is_err());
+    }
+
+    #[test]
     fn hand_fixes_keep_the_original() {
         let conn = open_in_memory().unwrap();
         insert_dictation(
@@ -738,7 +1237,11 @@ mod tests {
 
         insert_dictation(&conn, &sample("old", "2026-11-01T10:00:00Z", "old")).unwrap();
         insert_dictation(&conn, &sample("new", "2026-11-12T10:00:00Z", "new")).unwrap();
-        assert_eq!(expire_audio(&conn, "2026-11-05T00:00:00Z"), ["old.wav"]);
+        let due = dictation_audio_before(&conn, "2026-11-05T00:00:00Z");
+        assert_eq!(due, [("old".to_string(), "old.wav".to_string())]);
+        clear_dictation_audio(&conn, "old").unwrap();
+        assert!(dictation_audio_before(&conn, "2026-11-05T00:00:00Z").is_empty());
+        assert_eq!(dictations_before(&conn, "2026-11-05T00:00:00Z"), ["old"]);
         let all = list_dictations(&conn, 10).unwrap();
         assert_eq!(all.iter().find(|d| d.id == "old").unwrap().audio_path, None);
         assert!(all

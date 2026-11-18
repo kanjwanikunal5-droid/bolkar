@@ -19,18 +19,28 @@ export async function transcribe(key: string, wav: Blob, language: string | null
   if (language) form.append("language", language);
   if (prompt) form.append("prompt", prompt);
   const res = await check(await fetch(`${BASE}/audio/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form }));
-  return ((await res.json()) as { text: string }).text.trim();
+  const data = (await res.json().catch(() => null)) as { text?: unknown } | null;
+  if (!data || typeof data.text !== "string") throw new Error("Groq sent an answer that could not be read.");
+  return data.text.trim();
 }
 
-let chosenModel: string | null = null;
+/** The chosen text model, remembered per key (a different key may see other models). */
+let chosen: { key: string; model: string } | null = null;
 
 async function textModel(key: string): Promise<string> {
-  if (chosenModel) return chosenModel;
+  if (chosen && chosen.key === key) return chosen.model;
   const res = await check(await fetch(`${BASE}/models`, { headers: { Authorization: `Bearer ${key}` } }));
-  const ids = ((await res.json()) as { data: { id: string }[] }).data.map((m) => m.id);
-  chosenModel = TEXT_MODELS.find((m) => ids.includes(m)) ?? null;
-  if (!chosenModel) throw new Error("No suitable Groq text model is available.");
-  return chosenModel;
+  const data = (await res.json().catch(() => null)) as { data?: { id?: unknown }[] } | null;
+  const ids = Array.isArray(data?.data) ? data.data.map((m) => String(m.id)) : [];
+  const model = TEXT_MODELS.find((m) => ids.includes(m));
+  if (!model) throw new Error("No suitable Groq text model is available.");
+  chosen = { key, model };
+  return model;
+}
+
+/** Forget the remembered model (after the key is changed or removed). */
+export function resetModelChoice() {
+  chosen = null;
 }
 
 export async function chat(key: string, system: string, user: string, timeoutMs: number): Promise<string> {
@@ -56,7 +66,10 @@ export async function chat(key: string, system: string, user: string, timeoutMs:
         signal: ctrl.signal,
       }),
     );
-    return ((await res.json()) as { choices: { message: { content: string } }[] }).choices[0].message.content;
+    const data = (await res.json().catch(() => null)) as { choices?: { message?: { content?: unknown } }[] } | null;
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new Error("Groq sent an empty or unreadable answer.");
+    return content;
   } finally {
     clearTimeout(timer);
   }

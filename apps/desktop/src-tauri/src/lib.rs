@@ -4,9 +4,11 @@ mod audio;
 mod controller;
 pub mod credentials;
 mod db;
+pub mod diag;
 mod hotkey;
 mod insert;
 mod insights;
+mod library;
 mod meeting;
 mod models;
 mod overlay;
@@ -31,177 +33,76 @@ pub struct AppState {
     pub ctl: Mutex<Sender<Msg>>,
     pub hook_error: Mutex<Option<String>>,
     pub recorder: audio::Recorder,
-    pub meeting: Mutex<Option<(meeting::Recording, String)>>,
+    pub meeting: Mutex<Option<library::ActiveMeeting>>,
 }
 
-#[tauri::command]
-fn start_meeting(
-    state: State<AppState>,
-    mic: bool,
-    system: bool,
-    consent: bool,
-) -> Result<(), String> {
-    if !consent {
-        return Err("Please confirm that the participants know they are being recorded.".into());
-    }
-    let mut slot = state.meeting.lock().map_err(|e| e.to_string())?;
-    if slot.is_some() {
-        return Err("A meeting is already being recorded.".into());
-    }
-    let rec = meeting::Recording::start(&state.data_dir.join("meetings"), mic, system)?;
-    *slot = Some((rec, chrono::Utc::now().to_rfc3339()));
-    Ok(())
-}
-
-#[tauri::command]
-fn meeting_status(state: State<AppState>) -> Option<meeting::LiveStatus> {
-    state.meeting.lock().ok()?.as_ref().map(|(r, _)| r.status())
-}
-
-#[derive(Serialize)]
-struct MeetingResult {
-    id: String,
-    segments: Vec<app_core::summary::Segment>,
-    summary: Option<app_core::summary::Summary>,
-    /// Items the evidence check removed, for transparency.
-    dropped: Vec<String>,
-    markdown: String,
-    /// Why there is no summary, when there is none.
-    note: Option<String>,
-}
-
-/// Stops the recording, transcribes both tracks on this computer, and (if AI clean-up is set
-/// up) writes evidence-checked notes.
-#[tauri::command]
-async fn stop_meeting(
-    state: State<'_, AppState>,
-    title: String,
-    thoughts: Vec<(u64, String)>,
-) -> Result<MeetingResult, String> {
-    let (rec, started_at) = state
-        .meeting
-        .lock()
-        .map_err(|e| e.to_string())?
-        .take()
-        .ok_or("No meeting is being recorded.")?;
-    let finished = tauri::async_runtime::spawn_blocking(move || rec.stop())
-        .await
-        .map_err(|e| e.to_string())??;
-
-    let mut tracks = Vec::new();
-    if let Some(p) = &finished.mic_path {
-        tracks.push((PathBuf::from(p), "Me".to_string()));
-    }
-    if let Some(p) = &finished.system_path {
-        tracks.push((PathBuf::from(p), "Others".to_string()));
-    }
-    let (reply, rx) = channel();
-    state
-        .ctl
-        .lock()
-        .map_err(|e| e.to_string())?
-        .send(Msg::TranscribeMeeting { tracks, reply })
-        .map_err(|e| e.to_string())?;
-    let segments =
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string())?)
-            .await
-            .map_err(|e| e.to_string())??;
-
-    let title = if title.trim().is_empty() {
-        "Meeting".to_string()
-    } else {
-        title.trim().to_string()
+/// Deletes a file the app created. Only files inside the app's data folder are deleted; a
+/// file that is already gone counts as deleted. Errors name the file.
+pub fn remove_app_file(data_dir: &std::path::Path, path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    let base = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let target = match p.canonicalize() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{path}: {e}")),
     };
-    let mut summary = None;
-    let mut dropped = Vec::new();
-    let mut note = None;
-    let mut provider = String::new();
-    if segments.is_empty() {
-        note = Some("Nothing was heard in the recording.".into());
-    } else if let Some(cfg) = ai_config(&state) {
-        provider = cfg.provider.clone();
-        let system = app_core::summary::summary_prompt(
-            "the language of the meeting",
-            "the script used in the transcript",
-        );
-        let user = app_core::summary::summary_request(&title, &segments, &thoughts);
-        let bytes = system.len() + user.len();
-        let segs = segments.clone();
-        // Notes are long, so allow far more time than for a dictation.
-        let answer = tauri::async_runtime::spawn_blocking(move || {
-            providers::chat(&cfg, &system, &user, std::time::Duration::from_secs(90))
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        if let Ok(conn) = state.db.lock() {
-            let outcome = answer
-                .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|e| e.to_string());
-            db::log_event(
-                &conn,
-                "upload",
-                &format!("{provider}: meeting transcript for notes, {bytes} bytes, {outcome}"),
-            );
-        }
-        match answer
-            .map_err(|e| e.to_string())
-            .and_then(|a| app_core::summary::parse_summary(&a.content))
-        {
-            Ok(raw) => {
-                let mut v = app_core::summary::validate(raw, &segs);
-                v.summary.overview.title = title.clone();
-                v.summary.overview.duration_min =
-                    Some((finished.duration_ms as f64 / 60000.0 * 10.0).round() / 10.0);
-                dropped = v.dropped;
-                summary = Some(v.summary);
-            }
-            Err(e) => {
-                note = Some(format!(
-                    "Notes could not be written ({e}). The transcript is below."
-                ))
-            }
-        }
-    } else {
-        note = Some(
-            "Turn on AI clean-up in Settings to get organised notes. The transcript is below."
-                .into(),
-        );
+    if !target.starts_with(&base) {
+        return Err(format!(
+            "{path}: outside the app's data folder, not deleted"
+        ));
     }
+    match std::fs::remove_file(&target) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
 
-    let empty = app_core::summary::Summary {
-        overview: app_core::summary::Overview {
-            title: title.clone(),
+/// Other dictation apps that are running now. They may listen to the same keys or hold the
+/// microphone, so the app warns about them (it cannot tell which keys they use).
+fn other_dictation_apps() -> Vec<String> {
+    const KNOWN: &[(&str, &str)] = &[
+        ("wispr flow.exe", "Wispr Flow"),
+        ("typeless.exe", "Typeless"),
+        ("genspark speakly.exe", "Genspark Speakly"),
+        ("superwhisper.exe", "Superwhisper"),
+        ("aqua voice.exe", "Aqua Voice"),
+        ("willow voice.exe", "Willow Voice"),
+    ];
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut found = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return found;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
-        },
-        ..Default::default()
-    };
-    let markdown =
-        app_core::summary::to_markdown(summary.as_ref().unwrap_or(&empty), &segments, &thoughts);
-    if let Ok(conn) = state.db.lock() {
-        let json = summary.as_ref().and_then(|s| serde_json::to_string(s).ok());
-        db::save_meeting(
-            &conn,
-            &finished.id,
-            &title,
-            &started_at,
-            finished.duration_ms,
-            finished.mic_path.as_deref(),
-            finished.system_path.as_deref(),
-            &segments,
-            &thoughts,
-            json.as_deref(),
-            &provider,
-        )?;
+        };
+        let mut ok = Process32FirstW(snap, &mut entry).is_ok();
+        while ok {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+            if let Some((_, label)) = KNOWN.iter().find(|(exe, _)| *exe == name) {
+                if !found.iter().any(|f| f == label) {
+                    found.push(label.to_string());
+                }
+            }
+            ok = Process32NextW(snap, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snap);
     }
-    Ok(MeetingResult {
-        id: finished.id,
-        segments,
-        summary,
-        dropped,
-        markdown,
-        note,
-    })
+    found
 }
 
 #[derive(Serialize)]
@@ -313,8 +214,19 @@ const SETTINGS: &[(&str, &str)] = &[
     ("daily_goal", "100"),
     // Short sounds when dictation starts and ends.
     ("sounds", "on"),
-    // Hands-free dictation of several sentences is written as bullet points.
-    ("handsfree_points", "on"),
+    // Hands-free lists: "natural" (paragraphs; lists only when spoken: "first ..., second
+    // ...", "bullet point"), "auto" (also short independent requests) or "always". Replaces
+    // the 0.4.0 "handsfree_points" switch, which made every sentence a bullet.
+    ("list_format", "natural"),
+    // Retention in days; "0" keeps forever. "audio_retention_days" is dictation audio.
+    ("meeting_audio_retention_days", "30"),
+    ("history_retention_days", "0"),
+    ("meeting_retention_days", "0"),
+    // Content-free diagnostics log (Settings > Privacy).
+    ("diagnostics", "on"),
+    // Meeting devices by name; empty = the Windows default.
+    ("meeting_mic_device", ""),
+    ("meeting_output_device", ""),
 ];
 
 /// Keys set only through `set_ai` (never through the generic settings command).
@@ -989,6 +901,8 @@ struct Status {
     gpu_on: bool,
     /// A usable graphics card exists.
     gpu_present: bool,
+    /// Other dictation apps running now (they may use the same keys or the microphone).
+    other_dictation_apps: Vec<String>,
 }
 
 #[tauri::command]
@@ -1037,6 +951,7 @@ fn get_status(state: State<AppState>) -> Status {
         cloud_speech: asr_config(&state).is_some(),
         gpu_on: cfg!(feature = "gpu") && state.setting("use_gpu") == "true" && gpu_available(),
         gpu_present: gpu_available(),
+        other_dictation_apps: other_dictation_apps(),
     }
 }
 
@@ -1098,8 +1013,109 @@ fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(),
         }
         db::set_setting(&c, &key, &value)
     })?;
+    if key == "diagnostics" {
+        diag::set_enabled(value != "off");
+    }
     let _ = state.ctl.lock().map(|tx| tx.send(Msg::SettingsChanged));
+    if key.ends_with("retention_days") {
+        let _ = state.ctl.lock().map(|tx| tx.send(Msg::Retention));
+    }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct DiagnosticsInfo {
+    enabled: bool,
+    path: Option<String>,
+    bytes: u64,
+}
+
+#[tauri::command]
+fn diagnostics_info(state: State<AppState>) -> DiagnosticsInfo {
+    let path = diag::file();
+    let bytes = path
+        .iter()
+        .flat_map(|p| [p.clone(), p.with_file_name("diagnostics.1.log")])
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    DiagnosticsInfo {
+        enabled: state.setting("diagnostics") != "off",
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+        bytes,
+    }
+}
+
+#[tauri::command]
+fn delete_logs() -> Result<(), String> {
+    diag::delete()
+}
+
+/// A redacted diagnostics file for sending to whoever helps with a problem: versions, the
+/// non-personal settings, the device names, recent log lines and recent local events. No
+/// dictated text, transcripts, meeting titles, names or keys.
+#[tauri::command]
+fn export_diagnostics(app: AppHandle, state: State<AppState>) -> Result<String, String> {
+    const SKIP: &[&str] = &["user_name", "scratchpad"];
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{} {} diagnostics, {}\n\n",
+        app_core::brand::APP_NAME,
+        env!("CARGO_PKG_VERSION"),
+        chrono::Utc::now().to_rfc3339()
+    ));
+    out.push_str(&format!(
+        "GPU build: {} | graphics card found: {} | Windows: {}\n",
+        cfg!(feature = "gpu"),
+        gpu_available(),
+        std::env::var("OS").unwrap_or_default()
+    ));
+    out.push_str(&format!(
+        "AI clean-up: {} | cloud speech: {} | other dictation apps running: {:?}\n\n",
+        ai_config(&state)
+            .map(|c| format!("{} ({})", c.provider, c.model))
+            .unwrap_or_else(|| "off".into()),
+        asr_config(&state).is_some(),
+        other_dictation_apps()
+    ));
+    out.push_str("Settings:\n");
+    for (k, _) in SETTINGS.iter().filter(|(k, _)| !SKIP.contains(k)) {
+        out.push_str(&format!("  {k} = {}\n", state.setting(k)));
+    }
+    let d = meeting::list_devices();
+    out.push_str(&format!(
+        "\nInputs: {:?}\nOutputs: {:?}\n",
+        d.inputs, d.outputs
+    ));
+    out.push_str("\nRecent events:\n");
+    if let Ok(conn) = state.db.lock() {
+        for kind in ["timing", "upload", "retention", "meeting", "deleted"] {
+            for e in db::list_events(&conn, kind, 30).unwrap_or_default() {
+                out.push_str(&format!(
+                    "  {} [{}] {}\n",
+                    e.at,
+                    e.kind,
+                    diag::redact(&e.detail)
+                ));
+            }
+        }
+    }
+    out.push_str("\nDiagnostics log (last 500 lines):\n");
+    for l in diag::tail(500) {
+        out.push_str(&format!("  {l}\n"));
+    }
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| e.to_string())?
+        .join(app_core::brand::APP_NAME);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!(
+        "diagnostics {}.txt",
+        chrono::Utc::now().format("%Y-%m-%d %H-%M")
+    ));
+    std::fs::write(&path, diag::redact(&out)).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -1263,6 +1279,14 @@ fn self_test(app: &AppHandle) {
         return;
     };
     let out = std::env::var_os("APP_SELFTEST_OUT").map(PathBuf::from);
+    // Meeting pipeline test: APP_SELFTEST_MEETING names a folder with mic.wav / system.wav.
+    if let Some(dir) = std::env::var_os("APP_SELFTEST_MEETING") {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.hide();
+        }
+        library::self_test_meeting(app.clone(), PathBuf::from(dir), out);
+        return;
+    }
     let insert = std::env::var("APP_SELFTEST_INSERT").is_ok_and(|v| v == "1");
     // Command Mode self-test: the WAV is a spoken instruction for the selection in front.
     let command = std::env::var("APP_SELFTEST_COMMAND").is_ok_and(|v| v == "1");
@@ -1425,9 +1449,23 @@ pub fn run() {
             mic_status,
             set_cloud_asr,
             pill_action,
-            start_meeting,
-            meeting_status,
-            stop_meeting
+            library::list_audio_devices,
+            library::start_meeting,
+            library::meeting_status,
+            library::stop_meeting,
+            library::list_meetings,
+            library::get_meeting,
+            library::rename_meeting,
+            library::edit_meeting_line,
+            library::rewrite_meeting_notes,
+            library::transcribe_saved_meeting,
+            library::export_meeting,
+            library::reveal_file,
+            library::delete_meeting,
+            library::delete_all_meetings,
+            diagnostics_info,
+            delete_logs,
+            export_diagnostics
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1441,6 +1479,19 @@ pub fn run() {
             disable_power_throttling();
             let conn = db::open(&data_dir.join("app.sqlite3"))?;
             seed_packs(&conn);
+            diag::init(
+                &data_dir,
+                db::get_setting(&conn, "diagnostics").as_deref() != Some("off"),
+            );
+            diag::log(
+                "start",
+                &format!(
+                    "{} {} started (GPU build: {})",
+                    app_core::brand::APP_NAME,
+                    env!("CARGO_PKG_VERSION"),
+                    cfg!(feature = "gpu")
+                ),
+            );
 
             let (ctl_tx, ctl_rx) = channel::<Msg>();
             // Keyboard hook -> controller.
@@ -1472,9 +1523,26 @@ pub fn run() {
                 heal_gpu_setting(&state);
                 apply_recommended_defaults(&state);
                 auto_pick_model(&state);
+                library::recover_interrupted(&state);
             }
             overlay::prepare(&handle);
             controller::spawn(handle.clone(), ctl_rx, recorder);
+            {
+                // Retention also runs every 6 hours for an app that is never closed.
+                let h = handle.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+                    let sent = h
+                        .state::<AppState>()
+                        .ctl
+                        .lock()
+                        .map(|tx| tx.send(Msg::Retention).is_ok())
+                        .unwrap_or(false);
+                    if !sent {
+                        break;
+                    }
+                });
+            }
 
             // Tray icon: the app keeps running in the background when its window is closed.
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
@@ -1509,7 +1577,9 @@ pub fn run() {
                 });
             }
             // The window starts hidden (tauri.conf.json) so a test run never flashes it.
-            if std::env::var_os("APP_SELFTEST_WAV").is_none() {
+            // "--background" starts in the tray only (used after an install or at sign-in).
+            let background = std::env::args().any(|a| a == "--background");
+            if std::env::var_os("APP_SELFTEST_WAV").is_none() && !background {
                 show_main(&handle);
             }
             self_test(&handle);
@@ -1525,4 +1595,37 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running the app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_app_file;
+
+    #[test]
+    fn only_files_inside_the_data_folder_are_deleted() {
+        let root = std::env::temp_dir().join(format!("rm-guard-{}", std::process::id()));
+        let data = root.join("data");
+        let outside = root.join("outside.wav");
+        std::fs::create_dir_all(data.join("meetings")).unwrap();
+        let inside = data.join("meetings").join("mic.wav");
+        std::fs::write(&inside, b"x").unwrap();
+        std::fs::write(&outside, b"y").unwrap();
+
+        assert!(remove_app_file(&data, inside.to_str().unwrap()).is_ok());
+        assert!(!inside.exists(), "file inside the data folder is deleted");
+        assert!(
+            remove_app_file(&data, inside.to_str().unwrap()).is_ok(),
+            "already gone counts as deleted"
+        );
+        let err = remove_app_file(&data, outside.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("outside"), "{err}");
+        assert!(
+            outside.exists(),
+            "file outside the data folder is never deleted"
+        );
+        let sneaky = data.join("..").join("outside.wav");
+        assert!(remove_app_file(&data, sneaky.to_str().unwrap()).is_err());
+        assert!(outside.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

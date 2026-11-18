@@ -1,4 +1,4 @@
-{
+﻿{
     "version":  "0.0.1",
     "configurations":  [
                            {
@@ -29,6 +29,20 @@
                                                    "--strictPort"
                                                ],
                                "port":  1420
+                           },
+                           {
+                               "name":  "web-dev",
+                               "runtimeExecutable":  "pnpm",
+                               "runtimeArgs":  [
+                                                   "--dir",
+                                                   "apps/web",
+                                                   "exec",
+                                                   "vite",
+                                                   "--port",
+                                                   "5174",
+                                                   "--strictPort"
+                                               ],
+                               "port":  5174
                            }
                        ]
 }

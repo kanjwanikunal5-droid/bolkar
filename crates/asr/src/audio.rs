@@ -131,6 +131,53 @@ pub fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
     Ok(resample(&mono, spec.sample_rate, SAMPLE_RATE))
 }
 
+/// Length of a WAV file in 16 kHz samples (from its header; a file that is still being
+/// written counts up to its last flush).
+pub fn wav_len_16k(path: &Path) -> Result<usize, String> {
+    let reader = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = reader.spec();
+    let frames = reader.duration() as u64;
+    Ok((frames * u64::from(SAMPLE_RATE) / u64::from(spec.sample_rate.max(1))) as usize)
+}
+
+/// Reads `len` samples from `start` (16 kHz mono positions) without loading the whole file
+/// when it is already 16 kHz mono (meeting tracks are). Other files are read whole.
+pub fn read_wav_range_16k_mono(path: &Path, start: usize, len: usize) -> Result<Vec<f32>, String> {
+    let mut reader =
+        hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = reader.spec();
+    if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 {
+        let all = read_wav_16k_mono(path)?;
+        let s = start.min(all.len());
+        let e = start.saturating_add(len).min(all.len());
+        return Ok(all[s..e].to_vec());
+    }
+    let total = reader.duration() as usize;
+    if start >= total {
+        return Ok(Vec::new());
+    }
+    reader
+        .seek(start as u32)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let take = len.min(total - start);
+    Ok(match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .take(take)
+            .filter_map(Result::ok)
+            .collect(),
+        hound::SampleFormat::Int => {
+            let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .take(take)
+                .filter_map(Result::ok)
+                .map(|s| s as f32 / scale)
+                .collect()
+        }
+    })
+}
+
 /// Reads WAV, Ogg/Opus (WhatsApp voice notes) and other Symphonia formats as 16 kHz mono.
 pub fn read_audio_16k_mono(path: &Path) -> Result<Vec<f32>, String> {
     use symphonia::core::audio::SampleBuffer;
@@ -280,5 +327,26 @@ mod tests {
         let before = rms(&loud);
         normalise_quiet(&mut loud, 0.05, 8.0);
         assert_eq!(rms(&loud), before);
+    }
+
+    #[test]
+    fn a_range_of_a_wav_is_read_without_the_rest() {
+        let dir = std::env::temp_dir().join(format!("wavrange-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.wav");
+        let s: Vec<f32> = (0..32_000).map(|i| (i % 100) as f32 / 1000.0).collect();
+        write_wav_16k_mono(&path, &s).unwrap();
+        assert_eq!(wav_len_16k(&path).unwrap(), 32_000);
+        let part = read_wav_range_16k_mono(&path, 16_000, 500).unwrap();
+        assert_eq!(part.len(), 500);
+        assert!((part[7] - s[16_007]).abs() < 0.001);
+        assert!(read_wav_range_16k_mono(&path, 40_000, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            read_wav_range_16k_mono(&path, 31_990, 100).unwrap().len(),
+            10
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
