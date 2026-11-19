@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **17 November 2026** (versions 0.4.0, 0.4.1 and 0.4.2 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **19 November 2026** (versions 0.4.0 to 0.4.3 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -727,6 +727,103 @@ transcript was kept each time.
 | Desktop UI in the browser preview (sample data) | Meeting record + library + detail, Settings > Privacy and Writing, Home warning checked; no new console errors |
 | Web key store in a real browser (dev server) | save / unlock / wrong passphrase / forget: as expected, no records left |
 | Android build | not run locally (no Android SDK on this laptop); GitHub CI builds it |
+
+## 19 November 2026: version 0.4.3 - first words kept, better accuracy, smart layout, learning
+
+The owner reported: the first 2-5 seconds of a dictation are lost; accuracy in English and
+Hinglish is not good enough; text should be laid out like their picture (paragraphs, bullet
+points, or both with labels such as "Key decisions:"); the app should learn from their
+corrections; hundreds of dictionary words and snippets; install the newest version.
+
+### First seconds lost: what was found and what changed
+
+- 10 of the owner's 12 most recent dictation recordings began with 2.2 to 4.0 s of exact
+  digital zeros: the microphone stream was open but delivering silence-zeros, so the start of
+  the speech was never captured (not a recognition problem).
+- The recorder now has a watchdog: a stream that errors, delivers nothing for 2 s, or only
+  zeros for 4 s is reopened (backoff 0 s, 2 s, 10 s, 60 s). At Ctrl+Win+H a stale stream is
+  reopened at once, 1 s of pre-roll is kept, leading zeros are cut, and the pill says
+  "Mic starting... speak after the sound" until real audio arrives; the start sound plays only
+  then. The diagnostics log records whether the microphone was ready and how many ms of zeros
+  were cut.
+- Not proven: why the Windows microphone delivers zeros at first on this laptop. The new log
+  lines will show it on the owner's next dictations. Unit tests cover the watchdog decisions.
+
+### Accuracy: measured on the owner's own 53 recordings and on the synthetic sets
+
+The owner's 53 dictations have no corrected reference text, so they were judged by reading.
+- Groq with language "hi" (the 0.4.2 route) wrote 6 of them in Hindi letters; 2 of those were
+  English speech turned into invented Hindi-letter text. Language "en" translates real Hindi
+  into English. No fixed language ("auto") was best on English and mixed speech (for example
+  "accuracy", "Hinglish", "roll number" right) but wrote 2 real Hindi clips in Hindi letters and
+  1 in Urdu letters.
+- Synthetic sets (Windows voices, scored with `wer`): English, the same 0.62% in every mode.
+  Hinglish 30: "en" 46.46%, "auto" 71.38% raw (34 outputs not in Roman letters), the app's "hi"
+  route 21.38%; mixing the two by swapping non-Roman lines 25.76%.
+- New route for "English + Hinglish": both requests are sent at the same time; the "auto"
+  answer is used only when it is plain English (Roman letters and not Hinglish words),
+  otherwise the "hi" answer is used and any part of it in Hindi letters that the local
+  language check calls English is recognised again as English for those seconds. So synthetic
+  Hinglish gives the same result as 0.4.2, and English speech can no longer turn into Hindi
+  letters.
+- Release build, quiet app test with a copy of the owner's settings, on 12 of their
+  recordings: English ones came back in English (including the long dictation about this bug
+  and the neckband research request), Hinglish ones in Roman letters ("Nikhil bhai, aaj area
+  mein aayega kya bata de?", "And aapko mujhe ye bhi batana tha ki ..."), the Urdu-letter clip
+  now in Roman letters. Remaining faults are the recogniser's hearing, for example "even in
+  English or in English. Hinglish." (the raw recogniser text already says so) and "pick a blue
+  call". 100% is not reached and is not claimed.
+
+### Smart layout (the owner's picture)
+
+- New default "Smart layout" (Settings > Writing > Layout). For dictations of 3+ sentences or
+  40+ words, the AI proposes paragraphs, bullets, numbered steps and spoken labels
+  ("Key decisions:", "Next steps:"); `layout::accept_layout` accepts it only if every spoken
+  word is kept in the same order (only a few joining words such as "and", "next", "mein" may go,
+  spoken numbers never; no heading the speaker did not say). Otherwise the text is typed as
+  spoken. Stories and explanations stay paragraphs. Prompt: `spec/prompts/layout.md` v2.
+- `layout-eval` (Groq, the owner's model) on 7 dictations, 4 written for the test and 3 of the
+  owner's: the meeting text became a paragraph, "The key decisions were:" with 3 bullets and
+  "Next steps are:" with 3 numbered steps; the three-part project explanation became a numbered
+  list between two paragraphs; the story, the shopping text (too short) and the owner's 3
+  dictations stayed as spoken. The Hinglish meeting text was refused at first ("mein" dropped,
+  then 5 of 34 words dropped); after allowing "mein"/"toh" and not counting order words that
+  numbering replaces, the same layout passes the unit test (not re-sent to Groq).
+- Release build, quiet app test on 3 computer-voice recordings of the same texts: meeting -
+  paragraph, then "Next steps are:" with 1-3 numbered (the decisions stayed a sentence);
+  project - paragraph, numbered 1-3, paragraph; story - one paragraph. All three layout requests
+  to Groq succeeded.
+- A paragraph, a blank line, then the list; a label stays directly above its items.
+- Found in testing: right after the clean-up call, the layout call was often refused by Groq's
+  per-minute limit (8,000 tokens per minute for this model on the free plan, read from Groq's
+  rate-limit headers). Chat calls now wait out one short "try again" (up to 2.5 s, inside the
+  time limit); fake-server test added.
+
+### Learning from corrections, words and snippets
+
+- After a dictation is typed, for 90 s the app reads the same text box (Windows UI
+  Automation; same app only; never password boxes) every 4 s. If the owner changes a word, the
+  pair is learned: clear fixes replace automatically, risky ones only steer recognition. Only the
+  count is logged. Switch: Settings > Writing > "Learn from my corrections". The word-pair logic
+  has unit tests; reading a real app's box was not tested by hand, because that would show on
+  the owner's screen.
+- Word packs added once to every install: study, tools, personal (300+ terms: cost and management accounting, finance, tax and law; apps and AI
+  tools the owner uses; words heard in the owner's dictations), plus 90+ starter snippets
+  ("insert ..." triggers). No personal name ships in the app: signature snippets use the name
+  set in Settings ("Your name") and are left out when none is set. Tests: sizes, no duplicates, risky everyday words
+  kept hint-only.
+
+### Checks run (19 Nov 2026)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` (and with `--features dev-tools`) | clean |
+| `cargo test --workspace` | 197 passed, 0 failed, 2 ignored |
+| `pnpm exec tsc --noEmit` (desktop, web) | clean |
+| Desktop UI in the browser preview | Settings > Writing shows the four Layout choices and "Learn from my corrections"; only the known "no Tauri in a browser" listener errors in the console |
+| `pnpm tauri build` | `Speak Flow_0.4.3_x64-setup.exe` built |
+| Install on the owner's laptop | not done from this session: installs started from Claude's sandbox land in Claude's private storage, not the owner's Windows profile. The owner runs the installer (see HOW_TO_USE) |
 
 ## Measured accuracy per language
 

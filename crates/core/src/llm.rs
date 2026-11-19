@@ -110,6 +110,17 @@ pub fn transliterate_prompt() -> String {
 /// recognition plus AI conversion by a wide margin (14 Nov 2026, see docs/STATUS.md). Generic
 /// everyday wording on purpose: it teaches spelling, it must not leak words into the output.
 /// Shared by the desktop, web and Android apps.
+/// Prompt for recognition with no fixed language (English + Hinglish mode). Measured on the
+/// owner's 53 real dictations (19 Nov 2026): long English stayed English (Hindi mode had
+/// invented Hindi-letter text in 2 of them) and English-heavy Hinglish came out in Roman letters.
+pub const MIXED_ENGLISH_HINGLISH_EXAMPLE: &str = "Okay, so the meeting is at 4 PM and I will send the report by Friday. Haan bhai, main abhi kaam kar raha hoon, baad mein call karunga. Mujhe yeh topic revision style mein samjhao, okay?";
+
+/// True when text has Hindi (Devanagari) or Urdu (Arabic-script) letters.
+pub fn has_non_roman_indic(s: &str) -> bool {
+    s.chars()
+        .any(|c| ('\u{0900}'..='\u{097F}').contains(&c) || ('\u{0600}'..='\u{06FF}').contains(&c))
+}
+
 pub const ROMAN_HINGLISH_EXAMPLE: &str = "Haan bhai, sun na, kya chal raha hai? Main abhi kaam kar raha hoon. To be honest, mujhe bahut kaam hai, okay? Main baad mein call karunga. Tu tension mat le, sab theek ho jayega. Mujhe pata tha ki aisa hi hoga, isliye maine zyada socha nahi. Yaar, main sach bata raha hoon. Kal milte hain, phir plan banayenge.";
 
 /// One-call prompt: Devanagari / mixed Hinglish -> Roman Hinglish with WhatsApp spellings

@@ -90,9 +90,111 @@ pub fn choose(plan: RecognitionPlan, hinglish_detected: Option<bool>) -> Recogni
     }
 }
 
+/// A recognised stretch of speech with its time in seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timed {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+fn has_devanagari(s: &str) -> bool {
+    s.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+}
+
+/// Which segments of a Hindi-mode recognition came back in Hindi letters (and so need the
+/// "was it really English?" check).
+pub fn devanagari_segments(hindi: &[Timed]) -> Vec<usize> {
+    hindi
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| has_devanagari(&s.text))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Measured on the owner's own dictations (19 Nov 2026): in Hindi mode the recogniser
+/// sometimes turns the English part of a long dictation into invented Hindi-letter text, while
+/// English mode translates real Hindi into English. So the Hindi-mode result is kept, except
+/// for the segments the language check found to be English (`english[i]` true): those take
+/// the English-mode words recognised in the same seconds. Segments with no English
+/// counterpart are kept as they were.
+pub fn rescue_english(hindi: &[Timed], english_spoken: &[bool], english: &[Timed]) -> String {
+    let mut used = vec![false; english.len()];
+    let mut out: Vec<String> = Vec::new();
+    for (i, h) in hindi.iter().enumerate() {
+        if english_spoken.get(i).copied().unwrap_or(false) {
+            let mut picked: Vec<String> = Vec::new();
+            for (j, e) in english.iter().enumerate() {
+                let mid = (e.start + e.end) / 2.0;
+                if !used[j] && mid >= h.start - 0.5 && mid <= h.end + 0.5 {
+                    used[j] = true;
+                    picked.push(e.text.trim().to_string());
+                }
+            }
+            if !picked.is_empty() {
+                out.push(picked.join(" "));
+                continue;
+            }
+        }
+        out.push(h.text.trim().to_string());
+    }
+    out.retain(|s| !s.is_empty());
+    out.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tt(start: f64, end: f64, text: &str) -> Timed {
+        Timed {
+            start,
+            end,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn english_said_but_written_in_hindi_letters_is_replaced_hinglish_kept() {
+        // The owner's dictation of 19 Nov: English throughout, but the end came back as
+        // invented Hindi-letter text; a real Hindi sentence in the middle must stay.
+        let hindi = vec![
+            tt(
+                0.0,
+                6.0,
+                "So, when I click Ctrl plus Windows plus H, it should start.",
+            ),
+            tt(6.0, 9.0, "आपने ये चीज बहुत अच्छी की है"),
+            tt(9.0, 14.0, "अगर मैं एक्शब लगे बढ़ा सकूर मेरे वर्षों में"),
+        ];
+        let english = vec![
+            tt(
+                0.0,
+                6.1,
+                "So when I click Ctrl plus Windows plus H, it should start.",
+            ),
+            tt(6.1, 9.0, "You have done this very well."),
+            tt(9.0, 14.2, "and it should recognise my words instantly."),
+        ];
+        assert_eq!(devanagari_segments(&hindi), [1, 2]);
+        // The language check: segment 1 is Hindi, segment 2 is English.
+        let mask = [false, false, true];
+        assert_eq!(
+            rescue_english(&hindi, &mask, &english),
+            "So, when I click Ctrl plus Windows plus H, it should start. आपने ये चीज बहुत अच्छी की है and it should recognise my words instantly."
+        );
+        // Nothing to rescue: the Hindi-mode text stays exactly as it was.
+        assert_eq!(
+            rescue_english(&hindi, &[false, false, false], &english),
+            "So, when I click Ctrl plus Windows plus H, it should start. आपने ये चीज बहुत अच्छी की है अगर मैं एक्शब लगे बढ़ा सकूर मेरे वर्षों में"
+        );
+        // No English segment in that time: keep the original.
+        assert_eq!(
+            rescue_english(&hindi[2..], &[true], &english[..1]),
+            "अगर मैं एक्शब लगे बढ़ा सकूर मेरे वर्षों में"
+        );
+    }
 
     #[test]
     fn settings_round_trip_and_unknown_values_fall_back() {

@@ -47,11 +47,14 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Security_Credentials",
+  "Win32_System_Com",
   "Win32_System_DataExchange",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Ole",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
@@ -60,5 +63,17 @@ windows = { version = "0.61", features = [
 [[bin]]
 name = "ai-eval"
 path = "src/bin/ai-eval.rs"
+test = false
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "asr-eval"
+path = "src/bin/asr-eval.rs"
+test = false
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "layout-eval"
+path = "src/bin/layout-eval.rs"
 test = false
 required-features = ["dev-tools"]

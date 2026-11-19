@@ -1,20 +1,41 @@
 //! Microphone capture.
 //!
-//! The microphone is opened when recording starts and closed when it stops, so Windows'
-//! microphone indicator is on only while the app is listening. With "keep microphone ready"
-//! switched on, the stream stays open and a 300 ms pre-roll buffer protects the first word.
+//! With "keep microphone ready" on (the default), the stream stays open and the last second is
+//! kept in memory, so words said while pressing the keys are not lost. Measured on the owner's
+//! laptop (19 Nov 2026): 10 of 12 recordings started with 2.2-4.0 s of exact digital zeros,
+//! that is a microphone that had to start from cold; the speech said in that time was lost.
+//! Therefore:
+//! - a watchdog re-opens the stream in the background when it fails, stops delivering, or
+//!   delivers only exact zeros (a working microphone always has some noise), so it is warm
+//!   before the next key press;
+//! - the recorder reports when real sound arrives (`is_live`), so the pill can say
+//!   "Mic starting..." until then, and the start sound plays only once the microphone hears;
+//! - leading exact zeros are cut from a recording before recognition, and their length is
+//!   written to the diagnostics log.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SizedSample};
 
 use app_asr::audio::{resample, rms};
 use app_asr::SAMPLE_RATE;
 
-const PRE_ROLL_MS: usize = 300;
+/// Audio kept from just before the key press (only while the stream is kept open).
+const PRE_ROLL_MS: usize = 1000;
+/// How often the watchdog looks at the kept-open stream.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
+/// A kept-open stream with no callback for this long is dead.
+const NO_DATA_LIMIT_MS: u64 = 2000;
+/// A kept-open stream that delivered only exact zeros for this long is not hearing.
+const ZEROS_LIMIT_MS: u64 = 4000;
+/// Re-opens after repeated failures wait at least this long (a muted microphone gives zeros
+/// on purpose; the app must not keep restarting it).
+const REOPEN_BACKOFF: [u64; 4] = [0, 2000, 10_000, 60_000];
 
 #[derive(Default)]
 struct Shared {
@@ -32,12 +53,25 @@ enum Cmd {
     KeepOpen(bool),
 }
 
+/// Times (ms since the audio thread started) of the last callback and the last non-zero sample.
+#[derive(Default)]
+struct Pulse {
+    last_data: AtomicU64,
+    last_sound: AtomicU64,
+    /// When the current stream was opened.
+    opened: AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct Recorder {
     tx: Sender<Cmd>,
     level: Arc<AtomicU32>,
     failed: Arc<AtomicBool>,
     is_open: Arc<AtomicBool>,
+    pulse: Arc<Pulse>,
+    clock: Instant,
+    /// Set at Start: ms timestamp from which real sound counts as "the microphone is live".
+    start_mark: Arc<AtomicU64>,
 }
 
 struct Open {
@@ -45,10 +79,43 @@ struct Open {
     rate: u32,
 }
 
+fn now_ms(clock: Instant) -> u64 {
+    clock.elapsed().as_millis() as u64 + 1
+}
+
+fn build<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    push: impl Fn(&[f32]) + Send + 'static,
+    on_error: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: SizedSample + Send + 'static,
+    f32: FromSample<T>,
+{
+    device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            let m: Vec<f32> = data
+                .chunks(channels.max(1))
+                .map(|f| {
+                    f.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels.max(1) as f32
+                })
+                .collect();
+            push(&m);
+        },
+        on_error,
+        None,
+    )
+}
+
 fn open_stream(
     shared: &Arc<Mutex<Shared>>,
     level: &Arc<AtomicU32>,
     failed: &Arc<AtomicBool>,
+    pulse: &Arc<Pulse>,
+    clock: Instant,
 ) -> Result<Open, String> {
     let host = cpal::default_host();
     let device = host
@@ -65,11 +132,21 @@ fn open_stream(
         s.ring.clear();
     }
     failed.store(false, Ordering::SeqCst);
+    let opened = now_ms(clock);
+    pulse.opened.store(opened, Ordering::SeqCst);
+    pulse.last_data.store(opened, Ordering::SeqCst);
+    pulse.last_sound.store(0, Ordering::SeqCst);
 
     let push = {
         let shared = Arc::clone(shared);
         let level = Arc::clone(level);
+        let pulse = Arc::clone(pulse);
         move |mono: &[f32]| {
+            let t = now_ms(clock);
+            pulse.last_data.store(t, Ordering::Relaxed);
+            if mono.iter().any(|s| *s != 0.0) {
+                pulse.last_sound.store(t, Ordering::Relaxed);
+            }
             level.store(rms(mono).to_bits(), Ordering::Relaxed);
             if let Ok(mut s) = shared.lock() {
                 if s.recording {
@@ -86,51 +163,17 @@ fn open_stream(
         let failed = Arc::clone(failed);
         move |_e: cpal::StreamError| failed.store(true, Ordering::SeqCst)
     };
-    let mono = move |frame: &[f32]| frame.iter().sum::<f32>() / channels.max(1) as f32;
-
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let sc: cpal::StreamConfig = config.clone().into();
+    use cpal::SampleFormat as F;
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let m: Vec<f32> = data.chunks(channels.max(1)).map(mono).collect();
-                push(&m);
-            },
-            on_error,
-            None,
-        ),
-        cpal::SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let m: Vec<f32> = data
-                    .chunks(channels.max(1))
-                    .map(|f| {
-                        f.iter().map(|s| f32::from(*s) / 32768.0).sum::<f32>()
-                            / channels.max(1) as f32
-                    })
-                    .collect();
-                push(&m);
-            },
-            on_error,
-            None,
-        ),
-        cpal::SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                let m: Vec<f32> = data
-                    .chunks(channels.max(1))
-                    .map(|f| {
-                        f.iter()
-                            .map(|s| (f32::from(*s) - 32768.0) / 32768.0)
-                            .sum::<f32>()
-                            / channels.max(1) as f32
-                    })
-                    .collect();
-                push(&m);
-            },
-            on_error,
-            None,
-        ),
+        F::F32 => build::<f32>(&device, &sc, channels, push, on_error),
+        F::F64 => build::<f64>(&device, &sc, channels, push, on_error),
+        F::I8 => build::<i8>(&device, &sc, channels, push, on_error),
+        F::I16 => build::<i16>(&device, &sc, channels, push, on_error),
+        F::I32 => build::<i32>(&device, &sc, channels, push, on_error),
+        F::U8 => build::<u8>(&device, &sc, channels, push, on_error),
+        F::U16 => build::<u16>(&device, &sc, channels, push, on_error),
+        F::U32 => build::<u32>(&device, &sc, channels, push, on_error),
         other => return Err(format!("Unsupported microphone format: {other:?}")),
     }
     .map_err(|e| format!("Microphone in use by another app or blocked: {e}"))?;
@@ -143,15 +186,52 @@ fn open_stream(
     })
 }
 
+/// Number of leading exact-zero samples (a microphone that had not started yet).
+pub fn leading_zeros(samples: &[f32]) -> usize {
+    samples
+        .iter()
+        .position(|s| *s != 0.0)
+        .unwrap_or(samples.len())
+}
+
+/// Why the kept-open stream needs re-opening now, if it does.
+fn stream_problem(
+    failed: bool,
+    now: u64,
+    last_data: u64,
+    last_sound: u64,
+    opened: u64,
+) -> Option<&'static str> {
+    if failed {
+        return Some("stream error");
+    }
+    if now.saturating_sub(last_data) > NO_DATA_LIMIT_MS {
+        return Some("no audio delivered");
+    }
+    let sound_or_open = last_sound.max(opened);
+    if now.saturating_sub(sound_or_open) > ZEROS_LIMIT_MS {
+        return Some("only silence-zeros delivered");
+    }
+    None
+}
+
 impl Recorder {
     /// Spawns the audio thread (cpal streams must stay on the thread that made them).
     pub fn spawn() -> Self {
         let (tx, rx) = channel::<Cmd>();
         let level = Arc::new(AtomicU32::new(0));
         let failed = Arc::new(AtomicBool::new(false));
-        let (level_t, failed_t) = (Arc::clone(&level), Arc::clone(&failed));
         let is_open = Arc::new(AtomicBool::new(false));
-        let open_t = Arc::clone(&is_open);
+        let pulse = Arc::new(Pulse::default());
+        let clock = Instant::now();
+        let start_mark = Arc::new(AtomicU64::new(0));
+        let (level_t, failed_t, open_t, pulse_t, mark_t) = (
+            Arc::clone(&level),
+            Arc::clone(&failed),
+            Arc::clone(&is_open),
+            Arc::clone(&pulse),
+            Arc::clone(&start_mark),
+        );
 
         std::thread::Builder::new()
             .name("audio".into())
@@ -159,34 +239,106 @@ impl Recorder {
                 let shared = Arc::new(Mutex::new(Shared::default()));
                 let mut open: Option<Open> = None;
                 let mut keep_open = false;
-                for cmd in rx {
+                let mut reopen_failures = 0usize;
+                let mut next_reopen = 0u64;
+                let reopen = |open: &mut Option<Open>, why: &str| {
+                    *open = None;
+                    let result = open_stream(&shared, &level_t, &failed_t, &pulse_t, clock);
+                    crate::diag::log(
+                        "mic",
+                        &format!(
+                            "re-opened ({why}): {}",
+                            if result.is_ok() { "ok" } else { "failed" }
+                        ),
+                    );
+                    *open = result.ok();
+                };
+                loop {
+                    let cmd = match rx.recv_timeout(WATCH_EVERY) {
+                        Ok(c) => Some(c),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    };
+                    let recording = shared.lock().map(|s| s.recording).unwrap_or(false);
                     match cmd {
-                        Cmd::KeepOpen(v) => {
+                        // Watchdog: keep the ready stream really working between dictations.
+                        None => {
+                            if keep_open && !recording {
+                                let now = now_ms(clock);
+                                let problem = if open.is_none() {
+                                    Some("not open")
+                                } else {
+                                    stream_problem(
+                                        failed_t.load(Ordering::SeqCst),
+                                        now,
+                                        pulse_t.last_data.load(Ordering::Relaxed),
+                                        pulse_t.last_sound.load(Ordering::Relaxed),
+                                        pulse_t.opened.load(Ordering::Relaxed),
+                                    )
+                                };
+                                if let Some(why) = problem {
+                                    if now >= next_reopen {
+                                        reopen(&mut open, why);
+                                        let sounding = open.is_some();
+                                        reopen_failures = if sounding && why != "only silence-zeros delivered" {
+                                            0
+                                        } else {
+                                            (reopen_failures + 1).min(REOPEN_BACKOFF.len() - 1)
+                                        };
+                                        next_reopen = now + REOPEN_BACKOFF[reopen_failures];
+                                    }
+                                } else {
+                                    reopen_failures = 0;
+                                }
+                            }
+                        }
+                        Some(Cmd::KeepOpen(v)) => {
                             keep_open = v;
                             if v && open.is_none() {
-                                open = open_stream(&shared, &level_t, &failed_t).ok();
-                            } else if !v && !shared.lock().map(|s| s.recording).unwrap_or(false) {
+                                open = open_stream(&shared, &level_t, &failed_t, &pulse_t, clock).ok();
+                            } else if !v && !recording {
                                 open = None;
                             }
                         }
-                        Cmd::Start(reply) => {
-                            if open.is_none() || failed_t.load(Ordering::SeqCst) {
+                        Some(Cmd::Start(reply)) => {
+                            let now = now_ms(clock);
+                            // A kept stream that has not heard anything for a while is re-opened
+                            // now rather than trusted.
+                            let stale = open.is_some()
+                                && stream_problem(
+                                    failed_t.load(Ordering::SeqCst),
+                                    now,
+                                    pulse_t.last_data.load(Ordering::Relaxed),
+                                    pulse_t.last_sound.load(Ordering::Relaxed),
+                                    pulse_t.opened.load(Ordering::Relaxed),
+                                )
+                                .is_some();
+                            let was_warm = open.is_some() && !stale;
+                            if open.is_none() || stale {
                                 open = None;
-                                match open_stream(&shared, &level_t, &failed_t) {
+                                match open_stream(&shared, &level_t, &failed_t, &pulse_t, clock) {
                                     Ok(o) => open = Some(o),
                                     Err(e) => {
                                         let _ = reply.send(Err(e));
+                                        open_t.store(false, Ordering::SeqCst);
                                         continue;
                                     }
                                 }
                             }
+                            // With a warm stream, sound already counts; after a fresh open, only
+                            // sound from now on does.
+                            mark_t.store(if was_warm { 1 } else { now_ms(clock) }, Ordering::SeqCst);
                             if let Ok(mut s) = shared.lock() {
                                 s.buffer = s.ring.drain(..).collect();
                                 s.recording = true;
                             }
+                            crate::diag::log(
+                                "mic",
+                                if was_warm { "start: microphone was ready" } else { "start: microphone opened now (was not ready)" },
+                            );
                             let _ = reply.send(Ok(()));
                         }
-                        Cmd::Stop(reply) => {
+                        Some(Cmd::Stop(reply)) => {
                             let captured = shared.lock().ok().map(|mut s| {
                                 s.recording = false;
                                 std::mem::take(&mut s.buffer)
@@ -198,11 +350,22 @@ impl Recorder {
                             }
                             level_t.store(0, Ordering::Relaxed);
                             let _ = reply.send(match captured {
-                                Some(raw) => Ok(resample(&raw, rate, SAMPLE_RATE)),
+                                Some(mut raw) => {
+                                    // Cut a microphone start-up of exact zeros (no speech in it).
+                                    let zeros = leading_zeros(&raw);
+                                    if zeros > 0 {
+                                        let ms = zeros as u64 * 1000 / u64::from(rate.max(1));
+                                        if ms >= 200 {
+                                            crate::diag::log("mic", &format!("recording began with {ms} ms of silence-zeros (cut)"));
+                                        }
+                                        raw.drain(..zeros);
+                                    }
+                                    Ok(resample(&raw, rate, SAMPLE_RATE))
+                                }
                                 None => Err("audio state poisoned".into()),
                             });
                         }
-                        Cmd::Cancel => {
+                        Some(Cmd::Cancel) => {
                             if let Ok(mut s) = shared.lock() {
                                 s.recording = false;
                                 s.buffer.clear();
@@ -223,6 +386,9 @@ impl Recorder {
             level,
             failed,
             is_open,
+            pulse,
+            clock,
+            start_mark,
         }
     }
 
@@ -252,6 +418,13 @@ impl Recorder {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
+    /// True once the microphone delivers real sound for the recording that is running (always
+    /// at once with a ready microphone; after the start-up time with one that had to open).
+    pub fn is_live(&self) -> bool {
+        let mark = self.start_mark.load(Ordering::SeqCst);
+        self.pulse.last_sound.load(Ordering::Relaxed) >= mark && mark > 0
+    }
+
     /// Measures how long the default microphone takes to start delivering audio.
     /// Run by hand: `cargo test -p app-desktop --lib mic_open_latency -- --ignored --nocapture`
     #[cfg(test)]
@@ -259,8 +432,9 @@ impl Recorder {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let level = Arc::new(AtomicU32::new(u32::MAX));
         let failed = Arc::new(AtomicBool::new(false));
-        let started = std::time::Instant::now();
-        let _open = open_stream(&shared, &level, &failed)?;
+        let pulse = Arc::new(Pulse::default());
+        let started = Instant::now();
+        let _open = open_stream(&shared, &level, &failed, &pulse, started)?;
         // `level` is written by the first audio callback.
         while level.load(Ordering::Relaxed) == u32::MAX {
             if started.elapsed().as_secs() > 3 {
@@ -280,10 +454,17 @@ impl Recorder {
     pub fn device_failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
     }
+
+    #[allow(dead_code)]
+    fn now(&self) -> u64 {
+        now_ms(self.clock)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     #[ignore = "opens the real microphone; run by hand"]
     fn mic_open_latency() {
@@ -293,5 +474,33 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
         println!("microphone open-to-first-audio ms: {times:?}");
+    }
+
+    #[test]
+    fn leading_silence_zeros_are_counted() {
+        assert_eq!(leading_zeros(&[0.0, 0.0, 0.0, 0.01, 0.0]), 3);
+        assert_eq!(leading_zeros(&[0.2, 0.0]), 0);
+        assert_eq!(leading_zeros(&[0.0; 5]), 5);
+    }
+
+    #[test]
+    fn a_ready_stream_is_judged_by_data_and_sound() {
+        // Healthy: data and sound just now.
+        assert_eq!(stream_problem(false, 10_000, 9_900, 9_900, 1), None);
+        assert_eq!(
+            stream_problem(true, 10_000, 9_900, 9_900, 1),
+            Some("stream error")
+        );
+        assert_eq!(
+            stream_problem(false, 10_000, 7_000, 9_000, 1),
+            Some("no audio delivered")
+        );
+        // Data keeps coming, but only exact zeros for more than 4 s: not hearing.
+        assert_eq!(
+            stream_problem(false, 10_000, 9_990, 5_000, 1),
+            Some("only silence-zeros delivered")
+        );
+        // Just opened: zeros are allowed for the first seconds.
+        assert_eq!(stream_problem(false, 10_000, 9_990, 0, 8_000), None);
     }
 }

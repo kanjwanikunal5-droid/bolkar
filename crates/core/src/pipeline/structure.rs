@@ -10,8 +10,11 @@ use regex::Regex;
 /// Settings > Writing > Lists in hands-free dictation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListFormat {
-    /// Paragraphs; lists only from spoken enumerations and "bullet point" commands.
+    /// Natural rules, plus the AI layout (paragraphs, bullets, numbered steps, labels) for
+    /// longer dictations when AI clean-up is on (`crate::layout`). The default since 0.4.3.
     #[default]
+    Smart,
+    /// Paragraphs; lists only from spoken enumerations and "bullet point" commands.
     Natural,
     /// Also bullets when hands-free speech is several short, independent requests.
     Auto,
@@ -20,12 +23,13 @@ pub enum ListFormat {
 }
 
 impl ListFormat {
-    /// Unknown values (and the retired `handsfree_points` setting) mean Natural.
+    /// Unknown or empty values mean Smart (the default); "natural" keeps the rules only.
     pub fn from_setting(value: &str) -> Self {
         match value.trim() {
+            "natural" => Self::Natural,
             "auto" => Self::Auto,
             "always" => Self::Always,
-            _ => Self::Natural,
+            _ => Self::Smart,
         }
     }
 }
@@ -163,7 +167,7 @@ pub fn hands_free_structure(text: &str, format: ListFormat) -> String {
         return text.to_string();
     }
     let make_bullets = match format {
-        ListFormat::Natural => false,
+        ListFormat::Smart | ListFormat::Natural => false,
         ListFormat::Auto => looks_like_independent_items(text),
         ListFormat::Always => crate::command::items(text).len() >= 2,
     };
@@ -223,7 +227,8 @@ mod tests {
     fn settings_values() {
         assert_eq!(ListFormat::from_setting("auto"), ListFormat::Auto);
         assert_eq!(ListFormat::from_setting("always"), ListFormat::Always);
-        assert_eq!(ListFormat::from_setting("on"), ListFormat::Natural);
-        assert_eq!(ListFormat::from_setting(""), ListFormat::Natural);
+        assert_eq!(ListFormat::from_setting("natural"), ListFormat::Natural);
+        assert_eq!(ListFormat::from_setting("on"), ListFormat::Smart);
+        assert_eq!(ListFormat::from_setting(""), ListFormat::Smart);
     }
 }

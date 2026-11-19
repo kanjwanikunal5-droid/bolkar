@@ -8,6 +8,7 @@ pub mod diag;
 mod hotkey;
 mod insert;
 mod insights;
+mod learn_watch;
 mod library;
 mod meeting;
 mod models;
@@ -217,7 +218,9 @@ const SETTINGS: &[(&str, &str)] = &[
     // Hands-free lists: "natural" (paragraphs; lists only when spoken: "first ..., second
     // ...", "bullet point"), "auto" (also short independent requests) or "always". Replaces
     // the 0.4.0 "handsfree_points" switch, which made every sentence a bullet.
-    ("list_format", "natural"),
+    ("list_format", "smart"),
+    // Learn from corrections made in the app the text went into (Settings > Writing).
+    ("learn_from_edits", "on"),
     // Retention in days; "0" keeps forever. "audio_retention_days" is dictation audio.
     ("meeting_audio_retention_days", "30"),
     ("history_retention_days", "0"),
@@ -864,17 +867,40 @@ fn learn_terms(state: State<AppState>, items: Vec<(String, String)>) -> Result<(
     Ok(())
 }
 
-/// First run: enable the Finance and Tech word packs (editable afterwards).
+/// Adds each built-in word pack once (editable afterwards): Finance and Tech since the first
+/// version; Study (CMA), Tools and Personal, plus the starter snippets, since 0.4.3. A pack the
+/// user already has is not added again, and the user's own entries always win.
 fn seed_packs(conn: &Connection) {
-    if db::get_setting(conn, "packs_seeded").is_some() {
-        return;
-    }
-    for pack in ["finance", "tech"] {
+    let done = db::get_setting(conn, "packs_seeded").unwrap_or_default();
+    let mut have: Vec<String> = done
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    for pack in ["finance", "tech", "study", "tools", "personal"] {
+        if have.iter().any(|h| h == pack) {
+            continue;
+        }
         for t in app_core::dictionary::pack(pack) {
             let _ = db::upsert_term(conn, &t.term, &t.spoken_variants, "pack", t.auto_replace);
         }
+        have.push(pack.to_string());
     }
-    let _ = db::set_setting(conn, "packs_seeded", "finance,tech");
+    if !have.iter().any(|h| h == "snippets") {
+        let existing: Vec<String> = db::list_snippets(conn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.trigger)
+            .collect();
+        let name = db::get_setting(conn, "user_name").unwrap_or_default();
+        for s in app_core::packs::starter_snippets_for(&name) {
+            if !existing.iter().any(|e| e.eq_ignore_ascii_case(&s.trigger)) {
+                let _ = db::upsert_snippet(conn, &s.trigger, &s.body);
+            }
+        }
+        have.push("snippets".into());
+    }
+    let _ = db::set_setting(conn, "packs_seeded", &have.join(","));
 }
 
 #[derive(Serialize)]

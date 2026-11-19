@@ -59,11 +59,36 @@ Kunal, second thing my roll number is 52" becomes
 2. My roll number is 52
 ```
 
-Say "bullet point ..." / "next point ..." for bullets. Everything else stays a **natural
-paragraph**: connected sentences are never cut into one bullet each. If you want hands-free
-dictation (`Ctrl` + `Win` + `H`) to turn short, separate requests into bullets by itself, choose
-Settings -> Writing -> "Lists in hands-free mode" -> **Auto-detect lists** (or **Always use
-bullets**). The default is **Natural writing**.
+Say "bullet point ..." / "next point ..." for bullets.
+
+**Smart layout (default, with AI clean-up on):** a dictation of three or more sentences is laid
+out the way you would write it: a paragraph for a story or an explanation, bullet points when
+you list things, numbered lines for steps, and a label line when you name a group ("the key
+decisions are ...", "next steps ..."), or both together. Every word you said stays, in order;
+the app checks this word by word and keeps your text as spoken if the layout would change
+anything. A heading such as "Shopping list" appears only if you say it. Choose **Natural
+writing** in Settings -> Writing -> Layout to switch it off.
+
+## Starting to speak
+
+Press the keys and start talking: the microphone is kept ready and the last second before the
+key press is kept too. If the microphone had to wake up (after sleep, or a headset change), the
+pill says **"Mic starting... speak after the sound"**: wait for the start sound, then speak.
+
+## The app learns from you
+
+- **Your corrections:** after a dictation, the app re-reads that same text box for 90 seconds.
+  Correct a misheard word there (for example "Henglish" to "Hinglish") and it is learned
+  (Dictionary, marked "learned"): a misheard non-word is fixed automatically next time; a real
+  word ("cloud" for "Claude") only steers recognition. Password boxes are never read and only the
+  word pairs are kept. Switch it off in Settings -> Writing -> "Learn from my corrections".
+- **Word packs:** more than 300 words are already in the Dictionary: CMA and costing terms,
+  finance, tax, the apps and AI tools you use, and words you often say. Your own name comes from
+  Settings ("Your name").
+- **Snippets:** about 100 ready-made snippets. Say the trigger, get the text: "insert revision
+  prompt", "insert mcq prompt", "insert brutal review", "insert raste mein", "insert email
+  closing" and more. Signature snippets ("insert my signature", "insert my name") use the name
+  in Settings; they are added only when a name is set. See and edit them all on the Snippets page.
 
 ## English and Hinglish
 

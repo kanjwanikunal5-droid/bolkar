@@ -1,6 +1,6 @@
 # Privacy
 
-What the app does with your voice and text, as built (version 0.4.2). Updated 17 Nov 2026.
+What the app does with your voice and text, as built (version 0.4.3). Updated 19 Nov 2026.
 
 ## Principles
 
@@ -18,8 +18,8 @@ What the app does with your voice and text, as built (version 0.4.2). Updated 17
 | You turned on | What is sent | To |
 |---|---|---|
 | Nothing (default without a key) | Nothing. Speech is recognised by whisper.cpp on this computer. | - |
-| Groq speech recognition | The **audio** of each dictation (compressed) | Groq |
-| AI clean-up | The **text** of each dictation; for meeting notes, the meeting **transcript text**; Hinglish lines in Hindi letters, to be written in Roman letters | The provider you chose (Groq by default; a local Ollama model keeps text on this computer) |
+| Groq speech recognition | The **audio** of each dictation (compressed). In "English + Hinglish" mode it is sent as two requests at the same time (one with no fixed language, one as Hindi) and the better one is kept; when a mixed dictation has English parts written in Hindi letters, it is sent once more as English. The recognition hint sent with it contains your dictionary words and, if set, your name (Settings > General > "Your name") | Groq |
+| AI clean-up | The **text** of each dictation (for clean-up, and for longer dictations once more for the smart layout); for meeting notes, the meeting **transcript text**; Hinglish lines in Hindi letters, to be written in Roman letters | The provider you chose (Groq by default; a local Ollama model keeps text on this computer) |
 | Update check | Only a request for the latest version number | GitHub |
 | Model download | Only the request for the model file (checked by SHA-256) | Hugging Face |
 
@@ -43,6 +43,16 @@ gone; a failure stays listed and is written to the diagnostics log. Only files i
 data folder are ever deleted, and a meeting that is being recorded is never touched.
 A single meeting (or all meetings) can be deleted at once from Meeting notes > Past meetings,
 with its audio, transcript and notes.
+
+## Learning from your corrections
+
+When "Learn from my corrections" is on (Settings > Writing; on by default), the app looks at
+the text box it has just typed into for 90 seconds, every 4 seconds, using Windows UI
+Automation. It reads only that box, only while it belongs to the same app, and never a
+password box. If you changed a word of the dictation (for example "Kunal" for "Kunaal"), only
+that pair of words is saved to your dictionary on this computer. The text of the box is not
+stored, logged or sent anywhere; the diagnostics log records only how many corrections were
+learned. Turn the switch off to stop it.
 
 ## Keys
 

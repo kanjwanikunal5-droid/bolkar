@@ -177,6 +177,9 @@ pub fn pack(name: &str) -> Vec<Term> {
             Term::new("Windsurf"),
             Term::new("Replit"),
         ],
+        "study" => crate::packs::study(),
+        "tools" => crate::packs::tools(),
+        "personal" => crate::packs::personal(),
         _ => Vec::new(),
     }
 }

@@ -104,6 +104,63 @@ pub fn transcribe(
     prompt: Option<&str>,
     timeout: Duration,
 ) -> Result<(String, Duration), CallError> {
+    let (json, took) = transcribe_json(cfg, wav, language, prompt, timeout, false)?;
+    let out = json["text"]
+        .as_str()
+        .ok_or_else(|| CallError::BadAnswer("no text".into()))?
+        .trim()
+        .to_string();
+    Ok((out, took))
+}
+
+/// One recognised stretch of speech with its time (seconds from the start of the audio).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedText {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Like [`transcribe`], with the recogniser's sentence-level segments and their times.
+pub fn transcribe_timed(
+    cfg: &Config,
+    wav: Vec<u8>,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    timeout: Duration,
+) -> Result<(String, Vec<TimedText>, Duration), CallError> {
+    let (json, took) = transcribe_json(cfg, wav, language, prompt, timeout, true)?;
+    let text = json["text"]
+        .as_str()
+        .ok_or_else(|| CallError::BadAnswer("no text".into()))?
+        .trim()
+        .to_string();
+    let segments = json["segments"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| {
+                    Some(TimedText {
+                        start: s["start"].as_f64()?,
+                        end: s["end"].as_f64()?,
+                        text: s["text"].as_str()?.trim().to_string(),
+                    })
+                })
+                .filter(|s| !s.text.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((text, segments, took))
+}
+
+fn transcribe_json(
+    cfg: &Config,
+    wav: Vec<u8>,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    timeout: Duration,
+    verbose: bool,
+) -> Result<(serde_json::Value, Duration), CallError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()
@@ -122,7 +179,10 @@ pub fn transcribe(
         .part("file", file)
         .text("model", cfg.model.clone())
         .text("temperature", "0")
-        .text("response_format", "json");
+        .text(
+            "response_format",
+            if verbose { "verbose_json" } else { "json" },
+        );
     if let Some(l) = language {
         form = form.text("language", l.to_string());
     }
@@ -162,12 +222,7 @@ pub fn transcribe(
     }
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| CallError::BadAnswer(e.to_string()))?;
-    let out = json["text"]
-        .as_str()
-        .ok_or_else(|| CallError::BadAnswer("no text".into()))?
-        .trim()
-        .to_string();
-    Ok((out, started.elapsed()))
+    Ok((json, started.elapsed()))
 }
 
 /// Encodes 16 kHz mono samples as a 16-bit WAV file in memory.
@@ -284,34 +339,17 @@ pub fn chat(
         body["reasoning_format"] = serde_json::json!("hidden");
     }
     let payload = body.to_string();
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| CallError::Network(e.to_string()))?;
-    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let mut request = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .body(payload.clone());
-    if let Some(key) = cfg.key.as_deref().filter(|k| !k.is_empty()) {
-        request = request.bearer_auth(key);
-    }
     let started = Instant::now();
-    let response = request.send().map_err(|e| {
-        if e.is_timeout() {
-            CallError::Timeout
-        } else {
-            CallError::Network(e.to_string())
+    let (mut status, mut text, wait) = chat_once(cfg, &payload, timeout)?;
+    // A short "try again in a moment" (the per-minute limit, often hit by the second call of
+    // one dictation) is waited out once, if it fits in the time allowed.
+    if let Some(wait) = wait.filter(|w| status == 429 && *w <= MAX_RATE_WAIT) {
+        if started.elapsed() + wait < timeout {
+            std::thread::sleep(wait);
+            let left = timeout.saturating_sub(started.elapsed());
+            (status, text, _) = chat_once(cfg, &payload, left)?;
         }
-    })?;
-    let status = response.status().as_u16();
-    let text = response.text().map_err(|e| {
-        if e.is_timeout() {
-            CallError::Timeout
-        } else {
-            CallError::Network(e.to_string())
-        }
-    })?;
+    }
     match status {
         200..=299 => {}
         401 | 403 => return Err(CallError::BadKey),
@@ -332,6 +370,47 @@ pub fn chat(
         content,
         elapsed: started.elapsed(),
     })
+}
+
+/// The longest "try again in ..." a chat call waits out before giving up.
+const MAX_RATE_WAIT: Duration = Duration::from_millis(2500);
+
+/// One HTTP attempt: status, body, and the provider's `retry-after` (seconds) if it sent one.
+fn chat_once(
+    cfg: &Config,
+    payload: &str,
+    timeout: Duration,
+) -> Result<(u16, String, Option<Duration>), CallError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| CallError::Network(e.to_string()))?;
+    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let mut request = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(payload.to_string());
+    if let Some(key) = cfg.key.as_deref().filter(|k| !k.is_empty()) {
+        request = request.bearer_auth(key);
+    }
+    let as_call_error = |e: reqwest::Error| {
+        if e.is_timeout() {
+            CallError::Timeout
+        } else {
+            CallError::Network(e.to_string())
+        }
+    };
+    let response = request.send().map_err(as_call_error)?;
+    let status = response.status().as_u16();
+    let wait = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(Duration::from_secs_f64);
+    let text = response.text().map_err(as_call_error)?;
+    Ok((status, text, wait))
 }
 
 #[cfg(test)]
@@ -421,6 +500,76 @@ mod tests {
         );
         assert!(request.contains("\"model\":\"test-model\""));
         assert!(request.contains("um hello"));
+    }
+
+    /// Answers each connection in turn with the given raw HTTP replies.
+    fn fake_replies(replies: Vec<String>) -> (String, std::thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut served = 0;
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(300)))
+                    .unwrap();
+                let mut buf = vec![0u8; 65536];
+                let mut seen = Vec::new();
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                    let s = String::from_utf8_lossy(&seen);
+                    if let Some((head, rest)) = s.split_once("\r\n\r\n") {
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if rest.len() >= len {
+                            break;
+                        }
+                    }
+                }
+                let _ = stream.write_all(reply.as_bytes());
+                served += 1;
+            }
+            served
+        });
+        (url, handle)
+    }
+
+    fn raw(status: u16, extra: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[test]
+    fn a_short_rate_limit_wait_is_waited_out_once() {
+        let ok = r#"{"choices":[{"message":{"content":"done"}}]}"#;
+        // "Try again in 0.2 s": waited out, the second attempt answers.
+        let (url, s) = fake_replies(vec![
+            raw(429, "retry-after: 0.2\r\n", r#"{"error":"rate"}"#),
+            raw(200, "", ok),
+        ]);
+        let answer = chat(&cfg(url), "s", "u", Duration::from_secs(5)).unwrap();
+        assert_eq!(answer.content, "done");
+        assert_eq!(s.join().unwrap(), 2);
+        // "Try again in 30 s" is too long: reported at once, no second attempt.
+        let (url, s) = fake_replies(vec![raw(429, "retry-after: 30\r\n", r#"{"error":"rate"}"#)]);
+        let started = Instant::now();
+        assert_eq!(
+            chat(&cfg(url), "s", "u", Duration::from_secs(5)).err(),
+            Some(CallError::RateLimited)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(s.join().unwrap(), 1);
     }
 
     #[test]

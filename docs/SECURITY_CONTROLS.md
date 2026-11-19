@@ -3,7 +3,7 @@
 **This project holds NO security or compliance certifications.** It is not SOC 2, ISO 27001 or
 HIPAA certified, and has no agreements with any provider about data retention. Those are audits
 and contracts of organisations, not features of code. What follows are plain technical controls,
-with how each was checked. Updated for 0.4.2 (17 Nov 2026).
+with how each was checked. Updated for 0.4.3 (19 Nov 2026).
 
 ## In place
 
@@ -14,8 +14,10 @@ with how each was checked. Updated for 0.4.2 (17 Nov 2026).
 | Keys only in Windows Credential Manager | `credentials.rs`; never in the database, files or logs | Round-trip test against the real Credential Manager |
 | Every upload logged locally | `events` table, shown under "Data that left this computer" | Database test |
 | AI cannot add facts to dictations | `llm::accept` rejects new numbers, names, e-mails, links, rewrites, over-long answers, damaged snippets | Unit tests |
+| Smart layout cannot change words | `layout::accept_layout`: the laid-out text must be the spoken words in the same order; only listed joining words may be left out (few of them), spoken numbers never; otherwise the dictation is typed as spoken | Unit tests; 7 dictations through Groq with `layout-eval` |
+| Learning reads only the box it typed into | `learn_watch.rs`: Windows UI Automation, focused element only, same process as the paste target, never a password box, 90 s; only corrected word pairs are saved, only their count is logged; switch in Settings > Writing | Word-pair logic: unit tests. Reading a real app's text box: not tested by hand (it would show on the owner's screen) |
 | Meeting notes checked against the transcript | `summary::validate`: cited lines must exist; owners, deadlines, numbers and quotes must occur in them; hedged deadlines marked tentative; unsupported "confirmed" decisions shown as proposed; mismatches marked "Check this". Meaning is not proven and the app says so | 17 unit tests incl. adversarial cases |
-| AI time limit | 2.5 s for dictation clean-up, then the built-in rules; 90 s per meeting-notes window | Fake-server test (dictation) |
+| AI time limit | 2.5 s for dictation clean-up, then the built-in rules; 5 s for the smart layout, then the text as spoken; a "try again in up to 2.5 s" rate limit is waited out once within that time; 90 s per meeting-notes window | Fake-server test (dictation) |
 | Provider addresses | Must be `https://`, or `localhost` for a model on this computer | Code |
 | Dictations out of clipboard history | `ExcludeClipboardContentFromMonitorProcessing` + `CanIncludeInClipboardHistory=0` + `CanUploadToCloudClipboard=0`; a marker that cannot be set is logged | Clipboard test (marker present); Win+V checked by eye: not run |
 | Clipboard restored only if untouched | Sequence-number check; previous clipboard put back if writing the dictation fails | Clipboard test |

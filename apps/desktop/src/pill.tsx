@@ -79,6 +79,9 @@ function Pill() {
         if (next.state === "listening") cue("start");
         else if (next.state === "done") cue("done");
         else if (next.state === "error") cue("error");
+      } else if (next.sounds && next.state === "listening") {
+        // The microphone had to start: the start cue comes once it really hears.
+        cue("start");
       }
       last = next.state;
       setPill(next);

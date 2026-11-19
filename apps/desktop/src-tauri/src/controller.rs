@@ -26,10 +26,14 @@ use crate::{db, models, providers, AppState};
 
 /// The AI clean-up must answer within this time, or the rules are used instead.
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
+/// The smart layout of a long dictation; after this the text is typed as spoken.
+const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A Command Mode edit may rewrite a whole paragraph; it gets longer.
 const AI_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 /// Shown on the pill while Command Mode listens.
 const COMMAND_HINT: &str = "Say what to do, then Alt+Shift+C";
+/// Shown while a microphone that had to open delivers no sound yet (speak after the sound).
+const MIC_STARTING: &str = "Mic starting... speak after the sound";
 /// Cloud speech recognition normally answers in under half a second; after this, use the
 /// model on this computer instead.
 const CLOUD_ASR_TIMEOUT: Duration = Duration::from_secs(6);
@@ -91,6 +95,8 @@ struct Session {
     hands_free: bool,
     /// Command Mode: the selected text the spoken instruction applies to.
     command: Option<String>,
+    /// The microphone was hearing (start cue given) for this session.
+    live_announced: bool,
 }
 
 struct Loaded {
@@ -107,6 +113,8 @@ struct Controller {
     engine: Option<Loaded>,
     /// Bumped on every pill update so a delayed "hide" never hides a newer message.
     pill_generation: Arc<AtomicU64>,
+    /// The last dictation's text box, watched for the user's corrections (learning).
+    watch: Option<crate::learn_watch::Watch>,
 }
 
 pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
@@ -119,6 +127,7 @@ pub fn spawn(app: AppHandle, rx: Receiver<Msg>, recorder: Recorder) {
                 session: None,
                 engine: None,
                 pill_generation: Arc::new(AtomicU64::new(0)),
+                watch: None,
             };
             c.apply_settings();
             c.apply_retention();
@@ -259,9 +268,21 @@ impl Controller {
         };
     }
 
-    fn pill(&self, mut state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
+    fn pill(&self, state: PillState, target_hwnd: Option<isize>, hide_after: Option<Duration>) {
+        self.pill_with(state, target_hwnd, hide_after, true);
+    }
+
+    /// `allow_sound` false shows the pill without its sound (the start cue waits for a
+    /// microphone that is still starting).
+    fn pill_with(
+        &self,
+        mut state: PillState,
+        target_hwnd: Option<isize>,
+        hide_after: Option<Duration>,
+        allow_sound: bool,
+    ) {
         let quiet = crate::quiet_test();
-        state.sounds = !quiet && self.state().setting("sounds") != "off";
+        state.sounds = allow_sound && !quiet && self.state().setting("sounds") != "off";
         let generation = self.pill_generation.fetch_add(1, Ordering::SeqCst) + 1;
         overlay::emit(&self.app, &state);
         if !quiet {
@@ -348,6 +369,16 @@ impl Controller {
                 match rx.recv_timeout(Duration::from_millis(70)) {
                     Ok(m) => Some(m),
                     Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else if self.watch.is_some() {
+                // Between dictations: look at the last text box for corrections now and then.
+                match rx.recv_timeout(crate::learn_watch::READ_EVERY) {
+                    Ok(m) => Some(m),
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.look_for_corrections();
+                        continue;
+                    }
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
             } else {
@@ -464,9 +495,147 @@ impl Controller {
         }
     }
 
+    /// Groq in Hindi mode sometimes writes the English part of a long dictation as invented
+    /// Hindi-letter text (seen in the owner's own dictations, 19 Nov 2026), while English mode
+    /// would translate real Hindi. So each Hindi-letter segment's audio is checked with the
+    /// language detector on this computer; if it was English, the English-mode recognition of
+    /// those seconds replaces it. Returns the corrected text, or None when nothing changed.
+    fn rescue_english_parts(
+        &mut self,
+        cfg: &providers::Config,
+        samples: &[f32],
+        segments: &[providers::TimedText],
+        name_hint: &str,
+    ) -> Option<String> {
+        use app_core::language::{devanagari_segments, rescue_english, Timed};
+        let timed: Vec<Timed> = segments
+            .iter()
+            .map(|s| Timed {
+                start: s.start,
+                end: s.end,
+                text: s.text.clone(),
+            })
+            .collect();
+        let suspects = devanagari_segments(&timed);
+        if suspects.is_empty() {
+            return None;
+        }
+        self.ensure_engine().ok()?;
+        let loaded = self.engine.as_ref()?;
+        let rate = f64::from(app_asr::SAMPLE_RATE);
+        let mut english_spoken = vec![false; timed.len()];
+        for i in suspects {
+            let s = ((timed[i].start * rate) as usize).min(samples.len());
+            let e = ((timed[i].end * rate) as usize).min(samples.len());
+            if e < s + app_asr::SAMPLE_RATE as usize / 2 {
+                continue;
+            }
+            if let Ok(p) = loaded
+                .engine
+                .language_probabilities(&samples[s..e], &["en", "hi"])
+            {
+                english_spoken[i] = !app_asr::is_hinglish(p[0], p[1]);
+            }
+        }
+        let rescued = english_spoken.iter().filter(|x| **x).count();
+        if rescued == 0 {
+            return None;
+        }
+        let body = app_asr::opus::encode_ogg_opus(samples)
+            .unwrap_or_else(|_| providers::wav_bytes(samples));
+        let bytes = body.len();
+        // No glossary here: a long prompt can be copied into the text over silence.
+        let english = providers::transcribe_timed(
+            cfg,
+            body,
+            Some("en"),
+            Some(name_hint.trim()).filter(|p| !p.is_empty()),
+            CLOUD_ASR_TIMEOUT,
+        );
+        if let Ok(conn) = self.state().db.lock() {
+            db::log_event(
+                &conn,
+                "upload",
+                &format!(
+                    "{} ({}): dictation audio again in English mode for {rescued} part(s) that came back in Hindi letters but were English, {bytes} bytes, {}",
+                    cfg.provider,
+                    cfg.model,
+                    if english.is_ok() { "ok" } else { "failed" }
+                ),
+            );
+        }
+        let (_, english, _) = english.ok()?;
+        let english: Vec<Timed> = english
+            .into_iter()
+            .map(|s| Timed {
+                start: s.start,
+                end: s.end,
+                text: s.text,
+            })
+            .collect();
+        Some(rescue_english(&timed, &english_spoken, &english))
+    }
+
+    /// One look at the last dictation's text box; learns when watching ends.
+    fn look_for_corrections(&mut self) {
+        let Some(w) = self.watch.as_mut() else { return };
+        if !crate::learn_watch::look(w) {
+            self.learn_from_watch();
+        }
+    }
+
+    /// Learns the corrections seen in the last dictation's text box (if any) and stops watching.
+    fn learn_from_watch(&mut self) {
+        let Some(w) = self.watch.take() else { return };
+        let Some(corrected) = w.corrected else { return };
+        let mut learned = 0;
+        if let Ok(conn) = self.state().db.lock() {
+            for s in app_core::learn::suggest(&w.inserted, &corrected) {
+                let ok = match app_core::learn::classify(&s) {
+                    app_core::learn::Use::Replace => db::upsert_term(
+                        &conn,
+                        &s.term,
+                        std::slice::from_ref(&s.heard),
+                        "learned",
+                        true,
+                    )
+                    .is_ok(),
+                    app_core::learn::Use::HintOnly => db::upsert_term(
+                        &conn,
+                        &s.term,
+                        std::slice::from_ref(&s.heard),
+                        "learned",
+                        false,
+                    )
+                    .is_ok(),
+                    app_core::learn::Use::Skip => false,
+                };
+                if ok {
+                    learned += 1;
+                }
+            }
+            if learned > 0 {
+                // Only the count is logged; the words are in the Dictionary (source "learned").
+                db::log_event(
+                    &conn,
+                    "learned",
+                    &format!("{learned} correction(s) learned from an edit"),
+                );
+            }
+        }
+        if learned > 0 {
+            let _ = self.app.emit("dictation-added", "");
+        }
+    }
+
     fn begin(&mut self, hands_free: bool) {
         if self.session.is_some() {
             return;
+        }
+        // A new dictation: finish learning from the previous one (one last look first).
+        if let Some(w) = self.watch.as_mut() {
+            crate::learn_watch::look(w);
+            self.learn_from_watch();
         }
         let target = insert::target::foreground();
         let hwnd = target.as_ref().map(|t| t.hwnd);
@@ -475,21 +644,31 @@ impl Controller {
             self.message("error", e, hwnd);
             return;
         }
+        // A microphone that had to start from cold delivers nothing for a moment: the pill says
+        // so, and the start sound (the cue to speak) waits until real sound arrives.
+        let live = self.recorder.is_live();
         self.session = Some(Session {
             target,
             started: Instant::now(),
             hands_free,
             command: None,
+            live_announced: live,
         });
-        self.pill(
+        self.pill_with(
             PillState {
                 state: "listening",
                 hands_free,
+                message: if live {
+                    String::new()
+                } else {
+                    MIC_STARTING.into()
+                },
                 engine: String::new(),
                 ..Default::default()
             },
             hwnd,
             None,
+            live,
         );
     }
 
@@ -510,12 +689,27 @@ impl Controller {
             return;
         }
         let warn = session.hands_free && elapsed >= HANDS_FREE_WARN;
+        let live = self.recorder.is_live();
+        // The microphone has just started hearing: play the start cue now (once).
+        let cue = live && !session.live_announced;
+        let sounds_on = !crate::quiet_test() && self.state().setting("sounds") != "off";
+        if let Some(s) = self.session.as_mut() {
+            if cue {
+                s.live_announced = true;
+                crate::diag::log("mic", &format!("live after {} ms", elapsed.as_millis()));
+            }
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
         let state = PillState {
             state: "listening",
             message: if warn {
                 "Stopping at 20:00".into()
             } else if session.command.is_some() {
                 COMMAND_HINT.into()
+            } else if !live {
+                MIC_STARTING.into()
             } else {
                 String::new()
             },
@@ -523,8 +717,9 @@ impl Controller {
             seconds: elapsed.as_secs(),
             hands_free: session.hands_free,
             engine: String::new(),
-            // Level updates while listening never replay the start sound.
-            sounds: false,
+            // Level updates never replay the start sound, except the one cue when the
+            // microphone starts hearing.
+            sounds: cue && sounds_on,
         };
         overlay::emit(&self.app, &state);
     }
@@ -987,13 +1182,68 @@ impl Controller {
             } else {
                 (lang.clone(), format!("{hint}{name_hint}"))
             };
-            let result = providers::transcribe(
+            // English + Hinglish (19 Nov 2026, measured on the owner's 53 real dictations):
+            // two requests at the same time. (1) No fixed language with a mixed example: best
+            // for English and English-heavy Hinglish (Hindi mode had turned the English end of
+            // long dictations into invented Hindi-letter text). (2) Hindi mode with a Roman
+            // example, as before: best for Hindi-heavy speech. (1) is used when it is plain
+            // English; otherwise (2), with its English parts re-checked.
+            let auto_answer = if language == "en-hinglish" {
+                let glossary = dictionary.recogniser_hint(160);
+                let mixed = format!(
+                    "{} {glossary}{name_hint}",
+                    llm::MIXED_ENGLISH_HINGLISH_EXAMPLE
+                );
+                let (cfg2, body2) = (cfg.clone(), body.clone());
+                Some(std::thread::spawn(move || {
+                    providers::transcribe(&cfg2, body2, None, Some(mixed.trim()), CLOUD_ASR_TIMEOUT)
+                }))
+            } else {
+                None
+            };
+            // With sentence times, so English said in a dictation that came back in Hindi
+            // letters can be checked and recovered (see `rescue_english_parts`).
+            let timed = providers::transcribe_timed(
                 &cfg,
                 body,
                 cloud_lang.as_deref(),
                 Some(prompt.trim()),
                 CLOUD_ASR_TIMEOUT,
             );
+            let auto_answer = auto_answer.and_then(|h| h.join().ok());
+            if let (Some(a), Ok(conn)) = (&auto_answer, self.state().db.lock()) {
+                db::log_event(
+                    &conn,
+                    "upload",
+                    &format!(
+                        "{} ({}): dictation audio for speech recognition (no fixed language), {bytes} bytes, {}",
+                        cfg.provider,
+                        cfg.model,
+                        a.as_ref().map(|(_, t)| format!("ok in {} ms", t.as_millis())).unwrap_or_else(|e| e.to_string())
+                    ),
+                );
+            }
+            // Plain English from the no-fixed-language request: use it as it is.
+            let plain_english =
+                auto_answer
+                    .as_ref()
+                    .and_then(|a| a.as_ref().ok())
+                    .filter(|(t, _)| {
+                        !t.trim().is_empty()
+                            && !llm::has_non_roman_indic(t)
+                            && !app_core::hinglish::looks_hinglish(t)
+                    });
+            if let Some((t, took)) = plain_english {
+                used_cloud = true;
+                recognised = Some((
+                    app_asr::guard::filter_text(t, quiet),
+                    format!("Groq - {} (English, {} ms)", cfg.model, took.as_millis()),
+                ));
+            }
+            let result = timed
+                .as_ref()
+                .map(|(t, _, took)| (t.clone(), *took))
+                .map_err(Clone::clone);
             if let Ok(conn) = self.state().db.lock() {
                 let outcome = result
                     .as_ref()
@@ -1009,12 +1259,33 @@ impl Controller {
                 );
             }
             match result {
+                // Already answered by the no-fixed-language request (plain English).
+                _ if recognised.is_some() => {}
+                // Hindi mode failed but the other request answered: use that.
+                Err(_) if auto_answer.as_ref().is_some_and(|a| a.is_ok()) => {
+                    if let Some(Ok((t, _))) = &auto_answer {
+                        used_cloud = true;
+                        recognised = Some((
+                            app_asr::guard::filter_text(t, quiet),
+                            format!("Groq - {} (no fixed language)", cfg.model),
+                        ));
+                    }
+                }
                 Ok((text, _)) => {
                     used_cloud = true;
-                    recognised = Some((
-                        app_asr::guard::filter_text(&text, quiet),
-                        format!("Groq - {}", cfg.model),
-                    ));
+                    let mut label = format!("Groq - {}", cfg.model);
+                    let mut text = text;
+                    if language == "en-hinglish" {
+                        if let Ok((_, segments, _)) = &timed {
+                            if let Some(fixed) =
+                                self.rescue_english_parts(&cfg, &samples, segments, &name_hint)
+                            {
+                                text = fixed;
+                                label.push_str(" + English parts re-checked");
+                            }
+                        }
+                    }
+                    recognised = Some((app_asr::guard::filter_text(&text, quiet), label));
                 }
                 Err(e) => {
                     cloud_note = Some(format!(
@@ -1163,9 +1434,32 @@ impl Controller {
         // handled by the rules. Hands-free bullets only with the opt-in list setting
         // (Settings > Writing > Lists); a full stop alone never starts a new bullet.
         let mut final_text = pipeline::format_spoken_lists(&final_text);
+        let format = pipeline::ListFormat::from_setting(&self.state().setting("list_format"));
         if hands_free {
-            let format = pipeline::ListFormat::from_setting(&self.state().setting("list_format"));
             final_text = pipeline::hands_free_structure(&final_text, format);
+        }
+        // Smart layout (default): paragraphs, bullets, numbered steps and labels for longer
+        // dictations, proposed by the AI and accepted only if every spoken word is kept in
+        // order (`app_core::layout::accept_layout`).
+        if format == pipeline::ListFormat::Smart && app_core::layout::worth_laying_out(&final_text)
+        {
+            let user = serde_json::json!({ "text": final_text }).to_string();
+            match self
+                .ai_raw(
+                    &app_core::layout::layout_prompt(),
+                    &user,
+                    "layout",
+                    LAYOUT_TIMEOUT,
+                )
+                .and_then(|c| app_core::layout::parse_layout(&c))
+                .and_then(|laid| app_core::layout::accept_layout(&final_text, &laid))
+            {
+                Ok(laid) => final_text = laid,
+                Err(why) if !why.contains("is off") && why != "no layout" => {
+                    crate::diag::log("layout", &format!("kept as spoken: {why}"));
+                }
+                Err(_) => {}
+            }
         }
         let clean_ms = clean_started.elapsed().as_millis();
         let insert_started = Instant::now();
@@ -1187,6 +1481,12 @@ impl Controller {
         } else {
             None
         };
+        // Learning: watch the text box this went into for the user's corrections.
+        if let (Some(o), Some(t)) = (&outcome, &target) {
+            if o.inserted() && self.state().setting("learn_from_edits") != "off" {
+                self.watch = Some(crate::learn_watch::Watch::new(t.pid, &final_text));
+            }
+        }
         // Local timing log, so speed can be measured on real use (no text is stored here).
         if let Ok(conn) = self.state().db.lock() {
             db::log_event(
@@ -1325,6 +1625,8 @@ impl Controller {
             started: Instant::now(),
             hands_free: true,
             command: Some(selection),
+            // Command Mode keeps its own hint; no separate cue.
+            live_announced: true,
         });
         self.pill(
             PillState {

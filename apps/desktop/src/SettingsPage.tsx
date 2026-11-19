@@ -60,7 +60,7 @@ function General({ settings, set }: { settings: Settings; set: Set }) {
       <SettingRow title="Sounds" help="A soft sound when listening starts and when your text is typed.">
         <Switch label="Sounds" checked={settings.sounds !== "off"} onChange={(on) => set("sounds", on ? "on" : "off", on ? "Sounds on" : "Sounds off")} />
       </SettingRow>
-      <SettingRow title="Your name" help="Only used to greet you on Home. Stays on this computer.">
+      <SettingRow title="Your name" help="Greets you on Home, fills signature snippets and helps recognise your name (with Groq speech on, it is sent as part of the recognition hint).">
         <input
           type="text"
           aria-label="Your name"
@@ -393,18 +393,29 @@ function Writing({ settings, set }: { settings: Settings; set: Set }) {
         />
       </SettingRow>
       <SettingRow
-        title="Lists in hands-free mode"
-        help="Natural writing keeps connected sentences together as a paragraph. A list is made only when you speak one: “first ..., second ...”, “pehli baat ...”, or “bullet point ...”. Auto-detect also turns short, separate requests into bullets. Always makes every hands-free dictation of two or more sentences into bullets."
+        title="Layout"
+        help="Smart layout: longer dictations (3+ sentences) get paragraphs for explanations, bullet points for things you list, numbered lines for steps, and a label line when you name a group (“key decisions are ...”). Every word you said is kept in order; a heading appears only if you say it. Needs AI clean-up; without it, Natural writing is used. Natural writing: a list only when you speak one (“first ..., second ...”, “bullet point ...”). The last two apply to hands-free mode."
       >
         <select
-          aria-label="Lists in hands-free mode"
-          value={["natural", "auto", "always"].includes(settings.list_format ?? "") ? settings.list_format : "natural"}
-          onChange={(e) => set("list_format", e.target.value, "List setting saved")}
+          aria-label="Layout"
+          value={["smart", "natural", "auto", "always"].includes(settings.list_format ?? "") ? settings.list_format : "smart"}
+          onChange={(e) => set("list_format", e.target.value, "Layout saved")}
         >
-          <option value="natural">Natural writing (recommended)</option>
-          <option value="auto">Auto-detect lists</option>
-          <option value="always">Always use bullets</option>
+          <option value="smart">Smart layout (recommended)</option>
+          <option value="natural">Natural writing</option>
+          <option value="auto">Hands-free: auto-detect lists</option>
+          <option value="always">Hands-free: always bullets</option>
         </select>
+      </SettingRow>
+      <SettingRow
+        title="Learn from my corrections"
+        help="After a dictation, the app re-reads that same text box for 90 seconds. When you correct a misheard word there, it learns it (Dictionary, marked “learned”). A misheard non-word is fixed automatically next time; a real word (“cloud” for “Claude”) only steers recognition. Password boxes are never read and only the word pairs are kept."
+      >
+        <Switch
+          label="Learn from my corrections"
+          checked={settings.learn_from_edits !== "off"}
+          onChange={(on) => set("learn_from_edits", on ? "on" : "off", on ? "Learning on" : "Learning off")}
+        />
       </SettingRow>
       <SettingRow title="Spoken commands" help="Say “new line”, “full stop” or “bullet point” while dictating.">
         <Switch label="Spoken commands" checked={settings.spoken_commands === "true"} onChange={(on) => set("spoken_commands", String(on), on ? "Spoken commands on" : "Spoken commands off")} />
