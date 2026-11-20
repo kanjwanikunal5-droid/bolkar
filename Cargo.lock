@@ -130,6 +130,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "url",
  "uuid",
  "windows 0.61.3",
 ]

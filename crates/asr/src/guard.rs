@@ -129,6 +129,54 @@ pub fn kept_segments(segments: &[Segment]) -> Vec<(i64, i64, String)> {
         .collect()
 }
 
+/// Same text, ignoring case and punctuation.
+fn same_line(a: &str, b: &str) -> bool {
+    let k = |t: &str| {
+        t.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let (ka, kb) = (k(a), k(b));
+    !ka.is_empty() && ka == kb
+}
+
+/// The recogniser's looping failure: the same line three or more times in a row within one
+/// piece of audio (measured 20 Nov 2026: one sentence of a test meeting came back five times
+/// while the three sentences after it were missing). Two copies are left alone: people do
+/// repeat themselves.
+pub fn has_loop(segments: &[(i64, i64, String)]) -> bool {
+    segments
+        .windows(3)
+        .any(|w| same_line(&w[0].2, &w[1].2) && same_line(&w[1].2, &w[2].2))
+}
+
+/// Keeps the first line of each run of three or more identical lines in a row (see
+/// [`has_loop`]); returns how many copies were removed. Runs of two are kept.
+pub fn collapse_line_loops(segments: &mut Vec<(i64, i64, String)>) -> usize {
+    let mut out: Vec<(i64, i64, String)> = Vec::with_capacity(segments.len());
+    let mut removed = 0;
+    let mut i = 0;
+    while i < segments.len() {
+        let mut j = i + 1;
+        while j < segments.len() && same_line(&segments[i].2, &segments[j].2) {
+            j += 1;
+        }
+        if j - i >= 3 {
+            out.push(segments[i].clone());
+            removed += j - i - 1;
+        } else {
+            out.extend_from_slice(&segments[i..j]);
+        }
+        i = j;
+    }
+    *segments = out;
+    removed
+}
+
 /// Returns the kept text and the list of dropped segment texts.
 pub fn filter(segments: &[Segment]) -> (String, Vec<String>) {
     let mut kept: Vec<String> = Vec::new();
@@ -164,6 +212,28 @@ mod tests {
             text: text.into(),
             no_speech_prob: p,
         }
+    }
+
+    #[test]
+    fn a_line_repeated_three_times_in_a_row_is_a_loop_two_is_not() {
+        let l = |t: &str, s: i64| (s, s + 1000, t.to_string());
+        let mut segs = vec![
+            l("Agreed. Let us approve it.", 0),
+            l("Pria will finish the interviews by next Friday.", 1000),
+            l("pria will finish the interviews by next friday", 2000),
+            l("Pria will finish the interviews by next Friday.", 3000),
+            l("Pria will finish the interviews by next Friday.", 4000),
+            l("We will decide that next week.", 5000),
+        ];
+        assert!(has_loop(&segs));
+        assert_eq!(collapse_line_loops(&mut segs), 3);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[1].0, 1000);
+        // A real repetition of two is kept.
+        let mut two = vec![l("Yes.", 0), l("Yes.", 1000), l("Okay then.", 2000)];
+        assert!(!has_loop(&two));
+        assert_eq!(collapse_line_loops(&mut two), 0);
+        assert_eq!(two.len(), 3);
     }
 
     #[test]

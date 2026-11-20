@@ -394,12 +394,15 @@ fn contains_any(haystack: &str, words: &[&str]) -> bool {
 
 struct Index<'a> {
     by_id: HashMap<&'a str, &'a Segment>,
+    /// Segment ids in transcript order.
+    order: Vec<&'a str>,
 }
 
 impl<'a> Index<'a> {
     fn new(segments: &'a [Segment]) -> Self {
         Self {
             by_id: segments.iter().map(|s| (s.id.as_str(), s)).collect(),
+            order: segments.iter().map(|s| s.id.as_str()).collect(),
         }
     }
 
@@ -411,6 +414,24 @@ impl<'a> Index<'a> {
             .cloned()
             .collect();
         (!ok.is_empty()).then_some(ok)
+    }
+
+    /// `ids` plus the `k` transcript lines just before the earliest of them (a condition or an
+    /// amount is often said in the line before "Agreed.").
+    fn with_previous(&self, ids: &[String], k: usize) -> Vec<String> {
+        let first = ids
+            .iter()
+            .filter_map(|id| self.order.iter().position(|o| o == id))
+            .min();
+        let mut out: Vec<String> = match first {
+            Some(p) => self.order[p.saturating_sub(k)..p]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            None => Vec::new(),
+        };
+        out.extend(ids.iter().cloned());
+        out
     }
 
     fn cited_text(&self, ids: &[String]) -> String {
@@ -794,6 +815,22 @@ fn marker(check: Check) -> &'static str {
 
 /// Plain Markdown notes, in the section order of the build plan, empty sections left out.
 /// Topics are a paragraph first; bullets only for distinct points.
+/// "Microphone" / "System audio" (and older "Me" / "Others") are capture sources, not people.
+pub fn is_audio_source(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    [
+        MIC,
+        SYSTEM,
+        "me",
+        "others",
+        "microphone",
+        "system audio",
+        "mic",
+    ]
+    .iter()
+    .any(|s| s.to_lowercase() == n)
+}
+
 pub fn to_markdown(summary: &Summary, segments: &[Segment], thoughts: &[(u64, String)]) -> String {
     let at: HashMap<&str, u64> = segments
         .iter()
@@ -832,8 +869,33 @@ pub fn to_markdown(summary: &Summary, segments: &[Segment], thoughts: &[(u64, St
             format!("Duration: {m:.0} min")
         });
     }
-    if !o.participants.is_empty() {
-        meta.push(format!("Participants: {}", o.participants.join(", ")));
+    // "Microphone" and "System audio" are where the sound came from, not people: they are listed
+    // as audio sources, and people only when the notes name them (no speaker recognition yet).
+    let people: Vec<&String> = o
+        .participants
+        .iter()
+        .filter(|p| !is_audio_source(p))
+        .collect();
+    meta.push(if people.is_empty() {
+        "Participants: not identified".to_string()
+    } else {
+        format!(
+            "Participants: {}",
+            people
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    let mut sources: Vec<&str> = Vec::new();
+    for s in segments {
+        if !sources.contains(&s.speaker.as_str()) {
+            sources.push(&s.speaker);
+        }
+    }
+    if !sources.is_empty() {
+        meta.push(format!("Audio sources: {}", sources.join(", ")));
     }
     if let Some(p) = &o.purpose {
         meta.push(format!("Purpose: {p}"));
@@ -986,6 +1048,11 @@ pub fn to_text(markdown: &str) -> String {
 }
 
 pub fn validate(summary: Summary, segments: &[Segment]) -> Validated {
+    let mut summary = summary;
+    summary
+        .overview
+        .participants
+        .retain(|p| !is_audio_source(p));
     let index = Index::new(segments);
     let mut dropped = Vec::new();
     let mut flags = Vec::new();
@@ -1024,7 +1091,25 @@ pub fn validate(summary: Summary, segments: &[Segment]) -> Validated {
                 ));
                 return None;
             };
+            let mut evidence = evidence;
             let (mut check, mut note) = index.assess(&d.text, &evidence, d.quote.as_deref());
+            // A detail missing from the cited lines (the "above 3x" condition) is often in the
+            // line or two just before them: cite those too if that makes every detail found.
+            if check == Check::NeedsReview {
+                for k in 1..=2 {
+                    let wider = index.with_previous(&evidence, k);
+                    if wider.len() == evidence.len() {
+                        break;
+                    }
+                    let (c, n) = index.assess(&d.text, &wider, d.quote.as_deref());
+                    if c != Check::NeedsReview {
+                        evidence = wider;
+                        check = c;
+                        note = n;
+                        break;
+                    }
+                }
+            }
             let cited = index.cited_text(&evidence);
             let mut status = d.status;
             if status == DecisionStatus::Confirmed {
@@ -1048,6 +1133,15 @@ pub fn validate(summary: Summary, segments: &[Segment]) -> Validated {
                         note = None;
                     }
                 }
+            }
+            // Never "Confirmed" next to "check this": a decision whose details are not all in
+            // the cited lines is shown as proposed until the user checks it.
+            if status == DecisionStatus::Confirmed && check == Check::NeedsReview {
+                status = DecisionStatus::Proposed;
+                flags.push(format!(
+                    "decision \"{}\": shown as proposed, a detail in it is not in the cited lines",
+                    d.text
+                ));
             }
             if let Some(n) = &note {
                 flags.push(format!("decision \"{}\": {n}", d.text));
@@ -1505,6 +1599,47 @@ mod tests {
                 DecisionStatus::Confirmed
             ]
         );
+    }
+
+    /// The 0.4.3 meeting test (audit, 19 Nov 2026): the approval cited only "Agreed..." while the
+    /// "above three times" condition was in the line before; it showed "Confirmed" and "check
+    /// this" together. Now the earlier line is cited and the decision checks out; a detail that
+    /// is nowhere near the cited lines makes it "proposed", never "confirmed + check this".
+    #[test]
+    fn a_confirmed_decision_never_carries_a_check_this_note() {
+        let s = segs(&[
+            "Second, the marketing budget. The marketing team is asking for an additional 50,000 rupees for the festive campaign.",
+            "I am fine with that only if the campaign return on investment stays above three times.",
+            "Agreed. Let us approve the 50,000 rupees with that condition.",
+            "Third, hiring. We have three interviews pending.",
+        ]);
+        let d = "Approve an additional Rs 50,000 for the festive marketing campaign, provided the ROI stays above 3x.";
+        let v = validate(
+            Summary {
+                decisions: vec![
+                    decision(d, DecisionStatus::Confirmed, &["s3"]),
+                    decision(
+                        "Approve 75,000 rupees for the campaign.",
+                        DecisionStatus::Confirmed,
+                        &["s3"],
+                    ),
+                ],
+                ..Default::default()
+            },
+            &s,
+        );
+        let ok = &v.summary.decisions[0];
+        assert_eq!(ok.status, DecisionStatus::Confirmed);
+        assert_ne!(ok.check, Check::NeedsReview);
+        assert!(ok.evidence.contains(&"s2".to_string()), "{:?}", ok.evidence);
+        let wrong = &v.summary.decisions[1];
+        assert_eq!(wrong.status, DecisionStatus::Proposed);
+        assert_eq!(wrong.check, Check::NeedsReview);
+        for d in &v.summary.decisions {
+            assert!(!(d.status == DecisionStatus::Confirmed && d.check == Check::NeedsReview));
+        }
+        let md = to_markdown(&v.summary, &s, &[]);
+        assert!(!md.contains("**Confirmed:** Approve 75,000"), "{md}");
     }
 
     /// Found in the real-app meeting test (17 Nov 2026): quotes joined with "...", a value

@@ -237,7 +237,7 @@ mod formatting_regressions {
             "Bullet point: update the forecast. Next point: check cash flow.",
             Some(ListFormat::Natural),
         );
-        let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
+        let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("\u{2022} ")).collect();
         assert_eq!(bullets.len(), 2, "{out}");
         assert!(
             bullets[0].to_lowercase().contains("update the forecast"),

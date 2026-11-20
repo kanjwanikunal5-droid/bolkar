@@ -268,8 +268,8 @@ const CLOUD_ASR: &str = "cloud_asr";
 /// Consent for sending audio is recorded separately from consent for sending text.
 const CLOUD_ASR_CONSENT: &str = "groq-asr";
 const CLOUD_ASR_MODEL: &str = "whisper-large-v3";
-const CLOUD_ASR_NOTE: &str = "The audio of each dictation is sent to Groq for speech recognition. \
-     Free accounts have daily limits (about 8 hours of audio per day). Read Groq's privacy policy \
+const CLOUD_ASR_NOTE: &str = "The audio of each dictation is sent to Groq for speech recognition \
+     (in English + Hinglish mode twice at the same time, sometimes three times). Free accounts have daily limits (about 8 hours of audio per day). Read Groq's privacy policy \
      before agreeing.";
 /// Clean-up models in order of preference (measured 13 Nov 2026: qwen3.8-27b answered in a
 /// median 0.27 s, gpt-oss-20b in 0.70 s).
@@ -651,12 +651,8 @@ fn set_ai(
         return Err("Please tick the box to agree before turning on AI clean-up.".into());
     }
     let base_url = base_url.trim().to_string();
-    if !base_url.is_empty()
-        && !(base_url.starts_with("https://")
-            || base_url.starts_with("http://localhost")
-            || base_url.starts_with("http://127.0.0.1"))
-    {
-        return Err("The server address must start with https:// (or be on this computer).".into());
+    if !base_url.is_empty() {
+        providers::check_endpoint(&base_url)?;
     }
     if let Some(k) = key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         credentials::save(&provider, k)?;
@@ -673,6 +669,13 @@ fn set_ai(
         &base_url
     };
     db::record_consent(&conn, &provider, endpoint, model.trim(), preset.data_note)
+}
+
+/// Settings > Writing > "Forget learned words".
+#[tauri::command]
+fn forget_learned_words(state: State<AppState>) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_learned_terms(&conn)
 }
 
 #[tauri::command]
@@ -1461,6 +1464,7 @@ pub fn run() {
             get_ai,
             set_ai,
             forget_ai_key,
+            forget_learned_words,
             test_ai,
             list_uploads,
             list_terms,

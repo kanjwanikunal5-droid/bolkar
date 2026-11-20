@@ -79,6 +79,16 @@ struct Open {
     rate: u32,
 }
 
+/// True when a block carries a real signal rather than digital silence. This is NOT a voice
+/// detector, on purpose: the failure it catches (10 of 12 of the owner's recordings, Nov 2026)
+/// is a stream that delivers exact zeros. A working microphone in a quiet room still delivers
+/// small noise, and a noise-floor test here would wrongly call that stream dead and reopen it.
+/// Values below one 16-bit step (left over from format conversion) count as zero.
+fn carries_signal(block: &[f32]) -> bool {
+    const ONE_STEP: f32 = 1.0 / 32768.0;
+    block.iter().any(|s| s.abs() >= ONE_STEP)
+}
+
 fn now_ms(clock: Instant) -> u64 {
     clock.elapsed().as_millis() as u64 + 1
 }
@@ -144,7 +154,7 @@ fn open_stream(
         move |mono: &[f32]| {
             let t = now_ms(clock);
             pulse.last_data.store(t, Ordering::Relaxed);
-            if mono.iter().any(|s| *s != 0.0) {
+            if carries_signal(mono) {
                 pulse.last_sound.store(t, Ordering::Relaxed);
             }
             level.store(rms(mono).to_bits(), Ordering::Relaxed);
@@ -474,6 +484,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
         println!("microphone open-to-first-audio ms: {times:?}");
+    }
+
+    #[test]
+    fn digital_silence_is_not_a_signal_but_a_quiet_room_is() {
+        assert!(!carries_signal(&[0.0; 480]));
+        assert!(!carries_signal(&[1.0e-7; 480]), "conversion leftovers");
+        // Room noise around -70 dBFS is a working microphone.
+        assert!(carries_signal(&[0.0, 3.2e-4, -2.9e-4, 0.0]));
     }
 
     #[test]

@@ -184,6 +184,7 @@ export const api = {
   status: () => invoke<Status>("get_status"),
   settings: () => invoke<Settings>("get_settings"),
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
+  forgetLearnedWords: () => invoke<number>("forget_learned_words"),
   dictations: (limit = 200) => invoke<Dictation[]>("list_dictations", { limit }),
   deleteDictation: (id: string) => invoke<void>("delete_dictation", { id }),
   copy: (text: string) => invoke<void>("copy_text", { text }),

@@ -184,7 +184,7 @@ function Speech({ settings, set, status }: { settings: Settings; set: Set; statu
         <SettingRow title="Microphone" help="Speak to test. The microphone only records while you hold the keys.">
           <MicLevel />
         </SettingRow>
-        <SettingRow title="Instant start" help="Keeps the microphone ready so your first word is never cut off. Only the last 0.3 s is kept in memory; nothing is saved.">
+        <SettingRow title="Instant start" help="Keeps the microphone ready to help catch your first word. Up to the last 1 second is kept in memory only; nothing is saved to disk.">
           <Switch label="Instant start" checked={settings.keep_mic_open === "true"} onChange={(on) => set("keep_mic_open", String(on), on ? "Instant start on" : "Instant start off")} />
         </SettingRow>
         {status?.gpu_build && (
@@ -313,7 +313,7 @@ function Groq({ ai, refresh }: { ai: AiStatus | null; refresh: () => void }) {
       <div className="card">
         <SettingRow
           title="Speech recognition by Groq"
-          help="Your audio is recognised by Groq Whisper: the best English and Hinglish we measured. If Groq is slow or offline, this computer takes over automatically."
+          help="Your audio is recognised by Groq Whisper (best on our English and Hinglish tests). In English + Hinglish mode each dictation is sent twice at the same time, sometimes three times; with AI clean-up on, up to three short text requests follow (Hinglish spelling, clean-up, layout). If Groq is slow or offline, this computer takes over automatically."
         >
           <Switch
             label="Speech recognition by Groq"
@@ -378,6 +378,7 @@ function Groq({ ai, refresh }: { ai: AiStatus | null; refresh: () => void }) {
 /* ---------- Writing ---------- */
 
 function Writing({ settings, set }: { settings: Settings; set: Set }) {
+  const toast = useToast();
   return (
     <div className="card">
       <SettingRow title="Clean-up style" help="Light removes “um”, fixes self-corrections and formats lists. Professional also polishes grammar (needs AI clean-up). Literal keeps every word.">
@@ -409,13 +410,26 @@ function Writing({ settings, set }: { settings: Settings; set: Set }) {
       </SettingRow>
       <SettingRow
         title="Learn from my corrections"
-        help="After a dictation, the app re-reads that same text box for 90 seconds. When you correct a misheard word there, it learns it (Dictionary, marked “learned”). A misheard non-word is fixed automatically next time; a real word (“cloud” for “Claude”) only steers recognition. Password boxes are never read and only the word pairs are kept."
+        help="For 90 seconds after a dictation, the app looks at the exact text box it typed into (a few lines around your cursor). It stops as soon as you switch to another window or box. When you correct a misheard word there, it learns it (Dictionary, marked “learned”): a misheard non-word is fixed automatically next time; a real word (“cloud” for “Claude”) only steers recognition. Password boxes are never read; only the word pairs are kept."
       >
         <Switch
           label="Learn from my corrections"
           checked={settings.learn_from_edits !== "off"}
           onChange={(on) => set("learn_from_edits", on ? "on" : "off", on ? "Learning on" : "Learning off")}
         />
+      </SettingRow>
+      <SettingRow title="Forget learned words" help="Deletes every word the app learned from your corrections. Words you added yourself stay.">
+        <button
+          className="btn"
+          onClick={() =>
+            void api.forgetLearnedWords().then(
+              (n) => toast(n === 1 ? "1 learned word deleted" : `${n} learned words deleted`),
+              (e) => toast(errorText(e), true),
+            )
+          }
+        >
+          Forget learned words
+        </button>
       </SettingRow>
       <SettingRow title="Spoken commands" help="Say “new line”, “full stop” or “bullet point” while dictating.">
         <Switch label="Spoken commands" checked={settings.spoken_commands === "true"} onChange={(on) => set("spoken_commands", String(on), on ? "Spoken commands on" : "Spoken commands off")} />
