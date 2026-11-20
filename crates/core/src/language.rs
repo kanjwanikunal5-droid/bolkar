@@ -102,6 +102,22 @@ fn has_devanagari(s: &str) -> bool {
     s.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
 }
 
+/// The Hindi-mode answer for the same audio says the speech was mostly Hindi: at least 40% of
+/// its words in Hindi letters, or Roman text with Hinglish words. Then the no-fixed-language
+/// answer must not be taken as "plain English" even if it looks like Roman English: measured
+/// 20 Nov 2026 on the synthetic set B, "Kal meeting chaar baje hai" came back from that request
+/// as "Kal meeting 4 bajay hay" and "dil pe mat lena" as "Dil P. Matlena", which passed as
+/// English. A long English dictation whose end the Hindi mode wrongly wrote in Hindi letters
+/// stays well under 40%.
+pub fn hindi_mode_says_hindi(hindi_mode_answer: &str) -> bool {
+    let words: Vec<&str> = hindi_mode_answer.split_whitespace().collect();
+    if words.is_empty() {
+        return false;
+    }
+    let deva = words.iter().filter(|w| has_devanagari(w)).count();
+    deva * 10 >= words.len() * 4 || crate::hinglish::looks_hinglish(hindi_mode_answer)
+}
+
 /// Which segments of a Hindi-mode recognition came back in Hindi letters (and so need the
 /// "was it really English?" check).
 pub fn devanagari_segments(hindi: &[Timed]) -> Vec<usize> {
@@ -194,6 +210,24 @@ mod tests {
             rescue_english(&hindi[2..], &[true], &english[..1]),
             "अगर मैं एक्शब लगे बढ़ा सकूर मेरे वर्षों में"
         );
+    }
+
+    #[test]
+    fn hindi_heavy_speech_is_not_taken_for_plain_english() {
+        // Set B clips (20 Nov 2026): the Hindi-mode answers.
+        assert!(hindi_mode_says_hindi(
+            "कल मीटिंग चार बजे है, प्लीज टाइम पे आ जाना।"
+        ));
+        assert!(hindi_mode_says_hindi(
+            "Love you bhai, dil pe mat lena jo bhi hua."
+        ));
+        // English speech: Roman English, or a long English answer with a Hindi-letter tail.
+        assert!(!hindi_mode_says_hindi(
+            "Please send me the updated balance sheet before the end of the day."
+        ));
+        let long = "So when I click Ctrl plus Windows plus H it should directly start the conversation and recognise my words instantly. This is the thing which I want and the accuracy is not that great in both languages even in English or in Hinglish. अगर मैं एक्शब लगे";
+        assert!(!hindi_mode_says_hindi(long));
+        assert!(!hindi_mode_says_hindi(""));
     }
 
     #[test]

@@ -284,6 +284,21 @@ fn write_notes(
             std::thread::sleep(Duration::from_secs(wait_s));
             answer = providers::chat(&cfg, &system, &user, Duration::from_secs(90));
         }
+        // Still limited (the model's daily allowance is used up): the next Groq model has its
+        // own allowance; the answer is checked like any other.
+        if matches!(answer, Err(providers::CallError::RateLimited)) {
+            if let Some(alt) = crate::fallback_cleanup_model(&cfg) {
+                crate::diag::log(
+                    "meeting",
+                    &format!("notes part {}/{n}: limit reached, trying {alt}", i + 1),
+                );
+                let alt_cfg = providers::Config {
+                    model: alt,
+                    ..cfg.clone()
+                };
+                answer = providers::chat(&alt_cfg, &system, &user, Duration::from_secs(90));
+            }
+        }
         if let Ok(conn) = state.db.lock() {
             let outcome = answer
                 .as_ref()

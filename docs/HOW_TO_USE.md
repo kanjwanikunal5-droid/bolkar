@@ -77,13 +77,17 @@ pill says **"Mic starting... speak after the sound"**: wait for the start sound,
 
 ## The app learns from you
 
-- **Your corrections:** after a dictation, the app re-reads that same text box for 90 seconds.
-  Correct a misheard word there (for example "Henglish" to "Hinglish") and it is learned
+- **Your corrections:** after a dictation, the app re-reads that same text box for 90 seconds
+  (a few lines around your cursor). Correct the word right there, without switching to another
+  window or box first: switching ends the watch for that dictation. Correct a misheard word there (for example "Henglish" to "Hinglish") and it is learned
   (Dictionary, marked "learned"): a misheard non-word is fixed automatically next time; a real
   word ("cloud" for "Claude") only steers recognition. Password boxes are never read and only the
-  word pairs are kept. Switch it off in Settings -> Writing -> "Learn from my corrections".
+  word pairs are kept. Switch it off in Settings -> Writing -> "Learn from my corrections";
+  "Forget learned words" deletes everything it learned.
 - **Word packs:** more than 300 words are already in the Dictionary: CMA and costing terms,
-  finance, tax, the apps and AI tools you use, and words you often say. Your own name comes from
+  finance, tax, the apps and AI tools you use, and words you often say. They fix spellings in
+  your text; only the words you add yourself (or that are learned) are also given to the
+  recogniser as hints, because a very long hint list made it repeat sentences. Your own name comes from
   Settings ("Your name").
 - **Snippets:** about 100 ready-made snippets. Say the trigger, get the text: "insert revision
   prompt", "insert mcq prompt", "insert brutal review", "insert raste mein", "insert email

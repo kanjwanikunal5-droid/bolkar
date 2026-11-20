@@ -503,6 +503,19 @@ impl Controller {
     /// would translate real Hindi. So each Hindi-letter segment's audio is checked with the
     /// language detector on this computer; if it was English, the English-mode recognition of
     /// those seconds replaces it. Returns the corrected text, or None when nothing changed.
+    /// The local recogniser's language check on the first 30 s of the audio: Some(true) when it
+    /// hears Hinglish, None when no local model is installed.
+    fn local_says_hinglish(&mut self, samples: &[f32]) -> Option<bool> {
+        self.ensure_engine().ok()?;
+        let loaded = self.engine.as_ref()?;
+        let n = samples.len().min(app_asr::SAMPLE_RATE as usize * 30);
+        let p = loaded
+            .engine
+            .language_probabilities(&samples[..n], &["en", "hi"])
+            .ok()?;
+        Some(app_asr::is_hinglish(p[0], p[1]))
+    }
+
     fn rescue_english_parts(
         &mut self,
         cfg: &providers::Config,
@@ -1059,7 +1072,32 @@ impl Controller {
         timeout: Duration,
     ) -> Result<String, String> {
         let cfg = crate::ai_config(&self.state()).ok_or("AI clean-up is off")?;
-        let result = providers::chat(&cfg, system, user, timeout);
+        let mut result = self.ai_attempt(&cfg, system, user, purpose, timeout);
+        // Groq's free plan has a daily token limit per model (200,000 for the clean-up model,
+        // about 70-100 dictations; measured 20 Nov 2026). When it is reached, the next model has
+        // its own allowance: one more try there. Its answer goes through the same checks.
+        if matches!(result, Err(providers::CallError::RateLimited)) {
+            if let Some(alt) = crate::fallback_cleanup_model(&cfg) {
+                let alt_cfg = providers::Config {
+                    model: alt,
+                    ..cfg.clone()
+                };
+                result = self.ai_attempt(&alt_cfg, system, user, purpose, timeout);
+            }
+        }
+        result.map(|a| a.content).map_err(|e| e.to_string())
+    }
+
+    /// One AI request, logged in "Data that left this computer".
+    fn ai_attempt(
+        &self,
+        cfg: &providers::Config,
+        system: &str,
+        user: &str,
+        purpose: &str,
+        timeout: Duration,
+    ) -> Result<providers::Answer, providers::CallError> {
+        let result = providers::chat(cfg, system, user, timeout);
         if let Ok(conn) = self.state().db.lock() {
             let outcome = result
                 .as_ref()
@@ -1076,7 +1114,7 @@ impl Controller {
                 ),
             );
         }
-        result.map(|a| a.content).map_err(|e| e.to_string())
+        result
     }
 
     /// The recognition hint ("Glossary: ...") from the words the user added or that were learned
@@ -1301,6 +1339,9 @@ impl Controller {
         let mut cloud_note = None;
         let mut recognised: Option<(String, String)> = None;
         let mut used_cloud = false;
+        // A Roman-letter answer from the no-fixed-language request, kept in case the Hindi-mode
+        // answer comes back in Hindi letters and cannot be converted (AI limit reached).
+        let mut roman_alternative: Option<String> = None;
         if let Some(cfg) = cloud_cfg {
             // Compressed (Ogg/Opus, about 12 times smaller than WAV, same accuracy measured on
             // 45 clips): the upload is most of the waiting time on a slow connection.
@@ -1346,6 +1387,11 @@ impl Controller {
                 CLOUD_ASR_TIMEOUT,
             );
             let auto_answer = auto_answer.and_then(|h| h.join().ok());
+            roman_alternative = auto_answer
+                .as_ref()
+                .and_then(|a| a.as_ref().ok())
+                .map(|(t, _)| t.trim().to_string())
+                .filter(|t| !t.is_empty() && !llm::has_non_roman_indic(t));
             if let (Some(a), Ok(conn)) = (&auto_answer, self.state().db.lock()) {
                 db::log_event(
                     &conn,
@@ -1367,7 +1413,25 @@ impl Controller {
                         !t.trim().is_empty()
                             && !llm::has_non_roman_indic(t)
                             && !app_core::hinglish::looks_hinglish(t)
+                            // The Hindi-mode answer for the same audio says the speech was
+                            // mostly Hindi: then this Roman "English" is misheard Hinglish.
+                            && !timed.as_ref().is_ok_and(|(h, _, _)| {
+                                app_core::language::hindi_mode_says_hindi(h)
+                            })
                     });
+            // Third opinion (20 Nov 2026, set B: "Kal meeting 4 bajay hay" passed both checks
+            // above): the local language check on this computer's graphics card. If it hears
+            // Hinglish, the Hindi-mode answer is used instead.
+            let plain_english = match plain_english {
+                Some(_) if self.local_says_hinglish(&samples) == Some(true) => {
+                    crate::diag::log(
+                        "recognition",
+                        "no-fixed-language answer looked English, local check heard Hinglish: Hindi mode used",
+                    );
+                    None
+                }
+                other => other,
+            };
             if let Some((t, took)) = plain_english {
                 used_cloud = true;
                 recognised = Some((
@@ -1491,7 +1555,17 @@ impl Controller {
                     to_clean = app_core::hinglish::normalise(&raw);
                     engine_label.push_str(" + Roman Hinglish (AI)");
                 }
-                Err(why) => engine_label.push_str(&format!(" (Devanagari kept: {why})")),
+                Err(why) => match roman_alternative.take() {
+                    // Better than Hindi letters: the same audio, recognised in Roman letters.
+                    Some(alt) if used_cloud => {
+                        raw = alt;
+                        to_clean = app_core::hinglish::normalise(&raw);
+                        engine_label.push_str(&format!(
+                            " (Roman from the no-fixed-language answer; AI conversion: {why})"
+                        ));
+                    }
+                    _ => engine_label.push_str(&format!(" (Devanagari kept: {why})")),
+                },
             }
         } else if hinglish_route && !raw.is_empty() {
             // Already Roman: offline spelling table, then the AI spelling polish when allowed.

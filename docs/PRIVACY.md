@@ -1,6 +1,6 @@
 # Privacy
 
-What the app does with your voice and text, as built (version 0.4.3). Updated 19 Nov 2026.
+What the app does with your voice and text, as built (version 0.4.4). Updated 20 Nov 2026.
 
 ## Principles
 
@@ -47,12 +47,14 @@ with its audio, transcript and notes.
 ## Learning from your corrections
 
 When "Learn from my corrections" is on (Settings > Writing; on by default), the app looks at
-the text box it has just typed into for 90 seconds, every 4 seconds, using Windows UI
-Automation. It reads only that box, only while it belongs to the same app, and never a
-password box. If you changed a word of the dictation (for example "Kunal" for "Kunaal"), only
+the exact text box it has just typed into for up to 90 seconds, every 4 seconds, using Windows
+UI Automation. That window and box are pinned when the dictation is typed; as soon as another
+window or another box has the focus, watching stops for that dictation. It reads only a few
+lines around the cursor (never the whole document) and never a password box. A box that cannot
+be pinned is not watched. If you changed a word of the dictation (for example "Kunal" for "Kunaal"), only
 that pair of words is saved to your dictionary on this computer. The text of the box is not
 stored, logged or sent anywhere; the diagnostics log records only how many corrections were
-learned. Turn the switch off to stop it.
+learned. Turn the switch off to stop it; "Forget learned words" deletes everything it learned.
 
 ## Keys
 

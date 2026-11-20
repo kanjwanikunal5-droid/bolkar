@@ -279,6 +279,18 @@ const PREFERRED_CLEANUP_MODELS: &[&str] = &[
     "openai/gpt-oss-120b",
 ];
 
+/// The next Groq clean-up model when the chosen one has reached its free limit (each model has
+/// its own daily allowance). None for other providers or when there is no other.
+pub(crate) fn fallback_cleanup_model(cfg: &providers::Config) -> Option<String> {
+    if cfg.provider != "groq" {
+        return None;
+    }
+    PREFERRED_CLEANUP_MODELS
+        .iter()
+        .find(|m| **m != cfg.model)
+        .map(|m| m.to_string())
+}
+
 /// Cloud speech recognition, only when switched on, agreed to, and a Groq key exists.
 pub fn asr_config(state: &AppState) -> Option<providers::Config> {
     let on = {
@@ -1630,6 +1642,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::remove_app_file;
+
+    #[test]
+    fn a_limited_groq_model_falls_back_to_the_next_one() {
+        let cfg = |provider: &str, model: &str| crate::providers::Config {
+            provider: provider.into(),
+            base_url: String::new(),
+            model: model.into(),
+            key: None,
+        };
+        assert_eq!(
+            super::fallback_cleanup_model(&cfg("groq", "qwen/qwen3.8-27b")).as_deref(),
+            Some("openai/gpt-oss-20b")
+        );
+        assert_eq!(
+            super::fallback_cleanup_model(&cfg("groq", "openai/gpt-oss-20b")).as_deref(),
+            Some("qwen/qwen3.8-27b")
+        );
+        assert_eq!(
+            super::fallback_cleanup_model(&cfg("ollama", "llama3")),
+            None
+        );
+    }
 
     #[test]
     fn only_files_inside_the_data_folder_are_deleted() {
