@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **20 November 2026** (versions 0.4.0 to 0.4.4 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **20 November 2026** (versions 0.4.0 to 0.4.5 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -873,6 +873,17 @@ Checks: `cargo fmt` clean, `clippy -D warnings` clean (also with dev tools), `ca
 210 passed / 0 failed / 2 ignored, `tsc` clean (desktop, web). Not run: everything in
 `RELEASE_CHECKLIST.md` (needs the owner at the keyboard), real-voice accuracy (no references),
 the full Hinglish re-run after the fixes.
+
+## 20 November 2026 (evening): version 0.4.5 - small AI clean-up requests
+
+After the owner's dictionary grew to 1,564 words, the real diagnostics log showed clean-up
+requests of 12-19 KB (every dictionary word was listed in the request) and "no answer in time" /
+"free limit reached" on several dictations. 0.4.5 sends only the words that matter for the
+dictated text (`dictionary::relevant_terms`: words that occur in it, then look-alikes with the
+same first four letters, at most 40). Every word still corrects spellings on this computer as
+before. Test: 2,005 terms -> the right 4 for a sentence (exact, then a near match "kaggel" ->
+"Kaggle"), at most 40. Checks: see the commit; request sizes in real use to be read from the
+owner's diagnostics log after installing.
 
 ## Measured accuracy per language
 

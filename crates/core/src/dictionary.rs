@@ -135,6 +135,43 @@ impl Dictionary {
     }
 }
 
+/// The dictionary terms worth giving the AI clean-up for this text: terms whose words all occur
+/// in it first, then terms with a word that looks like one of its words (same first four
+/// letters, e.g. "kaggel" -> "Kaggle"), at most `max`. Every term still corrects spellings
+/// locally; this only keeps the AI request small. Measured 20 Nov 2026: sending all 1,564
+/// terms made each clean-up request 13-19 KB, and requests timed out or hit Groq's limits.
+pub fn relevant_terms(terms: &[String], text: &str, max: usize) -> Vec<String> {
+    let split = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let prefix = |w: &str| -> Option<String> {
+        (w.chars().count() >= 4).then(|| w.chars().take(4).collect())
+    };
+    let words: std::collections::HashSet<String> = split(text).into_iter().collect();
+    let prefixes: std::collections::HashSet<String> =
+        words.iter().filter_map(|w| prefix(w)).collect();
+    let (mut exact, mut near) = (Vec::new(), Vec::new());
+    for t in terms {
+        let tw = split(t);
+        if tw.is_empty() {
+            continue;
+        }
+        if tw.iter().all(|w| words.contains(w)) {
+            exact.push(t.clone());
+        } else if tw
+            .iter()
+            .any(|w| prefix(w).is_some_and(|p| prefixes.contains(&p)))
+        {
+            near.push(t.clone());
+        }
+    }
+    exact.into_iter().chain(near).take(max).collect()
+}
+
 /// Built-in word packs. The owner's profile enables Finance and Tech by default.
 pub fn pack(name: &str) -> Vec<Term> {
     match name {
@@ -187,6 +224,19 @@ pub fn pack(name: &str) -> Vec<Term> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_terms_that_matter_for_the_text_go_to_the_ai() {
+        let mut terms: Vec<String> = (0..2000).map(|i| format!("Term{i} Word{i}")).collect();
+        terms.extend(["Power Query", "Kaggle", "ITR", "CIBIL", "Zomato"].map(String::from));
+        let text = "I filed my itr and opened power query, then kaggel and the cibil score.";
+        let got = relevant_terms(&terms, text, 40);
+        assert_eq!(&got[..3], ["Power Query", "ITR", "CIBIL"]);
+        assert!(got.contains(&"Kaggle".to_string()), "near match: {got:?}");
+        assert!(!got.contains(&"Zomato".to_string()));
+        assert!(got.len() <= 40);
+        assert!(relevant_terms(&terms, "", 40).is_empty());
+    }
 
     #[test]
     fn packs_fix_spellings_but_leave_everyday_words() {
