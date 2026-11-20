@@ -153,6 +153,7 @@ class VoiceKeyboard : InputMethodService() {
     private fun stop() {
         if (prefs.engine == "groq") {
             val pcm = recorder.stop()
+            recorder.stopProblem?.let { android.util.Log.w("SpeakFlow", it) }
             if (Recorder.durationMs(pcm) < 300) {
                 showIdle()
                 return

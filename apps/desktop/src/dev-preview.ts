@@ -80,6 +80,7 @@ const handlers: Record<string, Handler> = {
     other_dictation_apps: ["Wispr Flow"],
   }),
   get_settings: () => settings,
+  forget_learned_words: () => 3,
   set_setting: (a) => {
     settings = { ...settings, [a.key as string]: a.value as string };
   },

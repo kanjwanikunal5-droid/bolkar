@@ -5,7 +5,8 @@
 //! An AI proposes the layout; this module decides whether to accept it. The rule is strict
 //! and checked word by word: the answer must contain the spoken words in the same order, with
 //! nothing added. It may only add line breaks, list markers and label colons, change capitals
-//! and punctuation, and drop a few list connectors ("and", "also", "first", "the ... are").
+//! and punctuation, and leave out a list connector ("and", "also", "aur", or an order word such as "first"
+//! that a number replaces) only where a new line starts.
 //! Anything else (a new word, a heading nobody said, a reordered or dropped content word) and
 //! the spoken text is kept as it was.
 
@@ -18,72 +19,15 @@ static WORD: LazyLock<Regex> =
 static MARKER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\s*(?:[-*\u{2022}\u{25CF}]|\d{1,2}[.)])\s+").unwrap());
 
-/// Words a layout may drop where they only introduce or join list items.
-const CONNECTORS: &[&str] = &[
-    "and",
-    "also",
-    "then",
-    "so",
-    "plus",
-    "the",
-    "a",
-    "an",
-    "are",
-    "is",
-    "were",
-    "was",
-    "will",
-    "be",
-    "as",
-    "follows",
-    "following",
-    "include",
-    "includes",
-    "including",
-    "like",
-    "first",
-    "firstly",
-    "second",
-    "secondly",
-    "third",
-    "thirdly",
-    "fourth",
-    "fifth",
-    "next",
-    "finally",
-    "lastly",
-    "number",
-    "point",
-    "points",
-    "bullet",
-    "okay",
-    "ok",
-    "these",
-    "those",
-    "that",
-    "there",
-    "which",
-    "our",
-    "my",
-    "we",
-    "have",
-    "has",
-    "aur",
-    "phir",
-    "pehla",
-    "pehli",
-    "doosra",
-    "doosri",
-    "teesra",
-    "teesri",
-    "hai",
-    "hain",
-    "mein",
-    "toh",
-];
+/// The only words a layout may leave out, and only right where a new line starts (they join
+/// list items: "... by Friday and | book the venue"). Words that carry meaning - subjects,
+/// pronouns, "will", "is", "not", "next", numbers, names, Hinglish "hai", "mein", "toh" - are
+/// never on this list (audit of 0.4.3, 19 Nov 2026).
+const CONNECTORS: &[&str] = &["and", "also", "then", "finally", "lastly", "aur", "phir"];
 
-/// Spoken order words ("first", "doosri") that a numbered or bulleted line replaces. They do not
-/// count towards the drop limit, but there can be no more of them than list lines.
+/// Spoken order words ("first", "doosri") that a numbered or bulleted line replaces. Like the
+/// connectors they may only go where a line starts, there can be no more of them than list
+/// lines, and they do not count towards the drop limit.
 const ORDINALS: &[&str] = &[
     "first", "firstly", "second", "secondly", "third", "thirdly", "fourth", "fifth", "pehla",
     "pehli", "doosra", "doosri", "teesra", "teesri",
@@ -151,12 +95,22 @@ pub fn accept_layout(spoken: &str, laid_out: &str) -> Result<String, String> {
     }
     let src = words(spoken);
     let without_markers = MARKER.replace_all(&out, "");
-    let got = words(&without_markers);
-    // `got` must be `src` with only connector words left out, in the same order.
+    // The words of the answer, and which of them start a line.
+    let mut got: Vec<String> = Vec::new();
+    let mut line_starts = std::collections::HashSet::new();
+    for line in without_markers.lines() {
+        let ws = words(line);
+        if !ws.is_empty() {
+            line_starts.insert(got.len());
+            got.extend(ws);
+        }
+    }
+    // `got` must be `src` with only connector words left out, each where a line starts, in the
+    // same order.
     let mut i = 0;
     let mut dropped = 0;
     let mut ordinals = 0;
-    for w in &got {
+    for (k, w) in got.iter().enumerate() {
         if !src[i.min(src.len())..].contains(w) {
             return Err(format!("\"{w}\" was not spoken (or not in this order)"));
         }
@@ -168,23 +122,19 @@ pub fn accept_layout(spoken: &str, laid_out: &str) -> Result<String, String> {
             if s == w {
                 break;
             }
+            let droppable = ORDINALS.contains(&s.as_str()) || CONNECTORS.contains(&s.as_str());
+            if !droppable || !line_starts.contains(&k) {
+                return Err(format!("the spoken word \"{s}\" was dropped or moved"));
+            }
             if ORDINALS.contains(&s.as_str()) {
                 ordinals += 1;
-            } else if CONNECTORS.contains(&s.as_str()) {
-                dropped += 1;
             } else {
-                return Err(format!("the spoken word \"{s}\" was dropped or moved"));
+                dropped += 1;
             }
         }
     }
-    for s in &src[i..] {
-        if ORDINALS.contains(&s.as_str()) {
-            ordinals += 1;
-        } else if CONNECTORS.contains(&s.as_str()) {
-            dropped += 1;
-        } else {
-            return Err(format!("the spoken word \"{s}\" was dropped"));
-        }
+    if let Some(s) = src.get(i) {
+        return Err(format!("the spoken word \"{s}\" was dropped"));
     }
     if dropped > 3 && dropped * 100 > src.len() * MAX_DROPPED_SHARE {
         return Err(format!("{dropped} of {} words dropped", src.len()));
@@ -239,10 +189,13 @@ mod tests {
     #[test]
     fn mixed_paragraph_and_points_like_the_owners_picture_is_accepted() {
         let spoken = "Today's discussion focused on the Q4 product roadmap and upcoming release plans. The team agreed to prioritise user experience improvements while keeping the launch timeline on track. The key decisions are improve onboarding flow, fix critical bugs in version 0.4.2 and enhance mobile performance. Next steps, the dev team to implement fixes by Friday and the product team to prepare release notes.";
-        let laid = "Today's discussion focused on the Q4 product roadmap and upcoming release plans. The team agreed to prioritise user experience improvements while keeping the launch timeline on track.\n\nKey decisions:\n- Improve onboarding flow\n- Fix critical bugs in version 0.4.2\n- Enhance mobile performance\n\nNext steps:\n1. Dev team to implement fixes by Friday\n2. Product team to prepare release notes";
+        let laid = "Today's discussion focused on the Q4 product roadmap and upcoming release plans. The team agreed to prioritise user experience improvements while keeping the launch timeline on track.\n\nThe key decisions are:\n- Improve onboarding flow\n- Fix critical bugs in version 0.4.2\n- Enhance mobile performance\n\nNext steps:\n1. The dev team to implement fixes by Friday\n2. The product team to prepare release notes";
         let ok = accept_layout(spoken, laid).unwrap();
         assert!(ok.contains("\u{2022} Improve onboarding flow"), "{ok}");
-        assert!(ok.contains("1. Dev team to implement fixes by Friday"));
+        assert!(ok.contains("1. The dev team to implement fixes by Friday"));
+        // Leaving out "The ... are" (0.4.3 allowed it) is refused now.
+        let short = laid.replace("The key decisions are:", "Key decisions:");
+        assert!(accept_layout(spoken, &short).is_err());
     }
 
     #[test]
@@ -259,21 +212,77 @@ mod tests {
     }
 
     #[test]
-    fn hinglish_label_words_may_be_left_out() {
+    fn hinglish_meaning_words_are_never_left_out() {
         let spoken = "Aaj humne do cheezein decide ki. Next steps mein mujhe deck bhejni hai aur venue book karna hai.";
-        let laid = "Aaj humne do cheezein decide ki.\n\nNext steps:\n\u{2022} mujhe deck bhejni hai\n\u{2022} venue book karna hai";
+        let laid = "Aaj humne do cheezein decide ki.\n\nNext steps mein:\n\u{2022} mujhe deck bhejni hai\n\u{2022} venue book karna hai";
         assert!(accept_layout(spoken, laid).is_ok());
+        // "mein" left out of the label: refused (0.4.3 allowed it).
+        let no_mein = laid.replace("Next steps mein:", "Next steps:");
+        assert!(accept_layout(spoken, &no_mein).is_err());
         // A Hinglish content word is never dropped.
-        let bad = "Aaj humne do cheezein decide ki.\n\nNext steps:\n\u{2022} mujhe deck bhejni hai\n\u{2022} venue karna hai";
+        let bad = "Aaj humne do cheezein decide ki.\n\nNext steps mein:\n\u{2022} mujhe deck bhejni hai\n\u{2022} venue karna hai";
         assert!(accept_layout(spoken, bad).is_err());
         // Order words replaced by numbering do not count as dropped words.
         let spoken = "Aaj ki meeting mein humne teen cheezein decide ki. Pehli, launch agle hafte hoga. Doosri, budget wahi rahega. Teesri, Rahul marketing dekhega. Next steps mein mujhe deck bhejni hai aur venue book karna hai.";
-        let laid = "Aaj ki meeting mein humne teen cheezein decide ki.\n1. Launch agle hafte hoga.\n2. Budget wahi rahega.\n3. Rahul marketing dekhega.\n\nNext steps:\n\u{2022} Mujhe deck bhejni hai\n\u{2022} Venue book karna hai.";
+        let laid = "Aaj ki meeting mein humne teen cheezein decide ki.\n1. Launch agle hafte hoga.\n2. Budget wahi rahega.\n3. Rahul marketing dekhega.\n\nNext steps mein:\n\u{2022} Mujhe deck bhejni hai\n\u{2022} Venue book karna hai.";
         assert!(
             accept_layout(spoken, laid).is_ok(),
             "{:?}",
             accept_layout(spoken, laid)
         );
+    }
+
+    /// The audit's adversarial cases: leaving out any word that carries meaning is refused,
+    /// even one, wherever it is; a joining word may go only where a new line starts.
+    #[test]
+    fn meaning_words_are_never_left_out() {
+        for w in [
+            "we", "our", "my", "will", "is", "was", "have", "has", "not", "only", "if", "unless",
+            "that", "which", "the", "next", "hai", "hain", "mein", "toh", "20th", "Priya",
+            "Monday", "50,000",
+        ] {
+            let spoken = format!("Here is the plan. Send the deck {w} today and book the venue.");
+            let without =
+                "Here is the plan.\n\u{2022} Send the deck today\n\u{2022} book the venue";
+            assert!(
+                accept_layout(&spoken, without).is_err(),
+                "dropping {w:?} was accepted"
+            );
+            let with = format!(
+                "Here is the plan.\n\u{2022} Send the deck {w} today\n\u{2022} book the venue"
+            );
+            assert!(
+                accept_layout(&spoken, &with).is_ok(),
+                "keeping {w:?} was refused"
+            );
+        }
+        // A joining word in the middle of a line: refused. At a line start: allowed.
+        let spoken = "We will send the deck and book the venue. Then call Priya.";
+        assert!(accept_layout(
+            spoken,
+            "\u{2022} We will send the deck book the venue\n\u{2022} call Priya."
+        )
+        .is_err());
+        assert!(accept_layout(
+            spoken,
+            "\u{2022} We will send the deck\n\u{2022} book the venue.\n\u{2022} call Priya."
+        )
+        .is_ok());
+        // "We will not approve unless..." keeps every word.
+        let spoken = "Budget review. We will not approve it unless the return stays above three times. Rahul checks it.";
+        let bad = "Budget review.\n\u{2022} We will approve it unless the return stays above three times.\n\u{2022} Rahul checks it.";
+        assert!(accept_layout(spoken, bad).unwrap_err().contains("not"));
+    }
+
+    /// "first, second, third" may become 1. 2. 3. without losing the items.
+    #[test]
+    fn order_words_become_numbers() {
+        let spoken = "We have three priorities. First, finish the forecast. Second, review hiring costs. Third, send the report by Friday.";
+        let laid = "We have three priorities:\n1. Finish the forecast.\n2. Review hiring costs.\n3. Send the report by Friday.";
+        assert_eq!(accept_layout(spoken, laid).unwrap(), laid);
+        // An order word dropped in the middle of a line is refused.
+        let bad = "We have three priorities:\n1. Finish the forecast. Review hiring costs.\n2. Send the report by Friday.";
+        assert!(accept_layout(spoken, bad).is_err());
     }
 
     #[test]
@@ -325,7 +334,7 @@ mod tests {
     fn hinglish_layout_keeps_roman_words() {
         let spoken =
             "Aaj ke kaam hain report bhejna, client ko call karna aur invoice check karna.";
-        let laid = "Aaj ke kaam:\n\u{2022} Report bhejna\n\u{2022} Client ko call karna\n\u{2022} Invoice check karna";
+        let laid = "Aaj ke kaam hain:\n\u{2022} Report bhejna\n\u{2022} Client ko call karna\n\u{2022} Invoice check karna";
         assert!(accept_layout(spoken, laid).is_ok());
     }
 

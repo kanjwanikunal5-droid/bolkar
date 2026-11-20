@@ -109,7 +109,7 @@
     { "id": "x-cm-003", "category": "command", "input": "Great work exclamation mark", "expected": "Great work!" },
     { "id": "x-cm-004", "category": "command", "input": "Items colon pens comma paper comma files", "expected": "Items: pens, paper, files" },
     { "id": "x-cm-005", "category": "command", "input": "Line one new line line two", "expected": "Line one\nLine two" },
-    { "id": "x-cm-006", "category": "command", "input": "Shopping list bullet point milk bullet point bread", "expected": "Shopping list\n- Milk\n- Bread" },
+    { "id": "x-cm-006", "category": "command", "input": "Shopping list bullet point milk bullet point bread", "expected": "Shopping list\n\u2022 Milk\n\u2022 Bread" },
     { "id": "x-cm-007", "category": "command", "input": "Thanks full stop new line Regards", "expected": "Thanks.\nRegards" },
     { "id": "x-cm-008", "category": "command", "input": "Heading Quarterly review", "expected": "Quarterly review" },
     { "id": "x-cm-009", "category": "command", "input": "Hello next line world", "expected": "Hello\nWorld" },

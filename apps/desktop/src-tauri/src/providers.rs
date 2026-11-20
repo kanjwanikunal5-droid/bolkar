@@ -95,6 +95,52 @@ impl std::fmt::Display for CallError {
     }
 }
 
+/// Checks a provider address before any request that carries the user's key.
+/// `https://` hosts are allowed (normal certificate checks apply). Plain `http://` only for
+/// this computer: the parsed host must be exactly `localhost` or a loopback IP (127.x, ::1);
+/// `http://localhost.evil.example` and `http://localhost@evil.example` are other hosts and are
+/// refused. Addresses with a user name/password, a query or a fragment are refused too.
+pub fn check_endpoint(address: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(address.trim())
+        .map_err(|_| "This is not a valid web address.".to_string())?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("The address must not contain a user name or password.".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("The address must not contain ? or # parts.".into());
+    }
+    let host = url
+        .host()
+        .ok_or_else(|| "The address has no server name.".to_string())?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let local = match host {
+                url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+                url::Host::Ipv4(ip) => ip.is_loopback(),
+                url::Host::Ipv6(ip) => ip.is_loopback(),
+            };
+            if local {
+                Ok(())
+            } else {
+                Err("Plain http:// is only allowed for a server on this computer (localhost, 127.0.0.1 or [::1]). Use https:// for anything else.".into())
+            }
+        }
+        _ => Err("The address must start with https:// (or http:// for this computer).".into()),
+    }
+}
+
+/// HTTP client for requests that carry the key: the address is checked first, and redirects
+/// are never followed, so the key cannot be forwarded to another server.
+fn key_client(cfg: &Config, timeout: Duration) -> Result<reqwest::blocking::Client, CallError> {
+    check_endpoint(&cfg.base_url).map_err(CallError::Network)?;
+    reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| CallError::Network(e.to_string()))
+}
+
 /// Speech-to-text in the cloud (OpenAI-compatible `POST /audio/transcriptions`).
 /// `wav` is a complete WAV file. Returns the text and the time taken.
 pub fn transcribe(
@@ -161,10 +207,7 @@ fn transcribe_json(
     timeout: Duration,
     verbose: bool,
 ) -> Result<(serde_json::Value, Duration), CallError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| CallError::Network(e.to_string()))?;
+    let client = key_client(cfg, timeout)?;
     // Ogg/Opus (compressed, see app_asr::opus) or WAV, told apart by the first bytes.
     let (name, mime) = if wav.starts_with(b"OggS") {
         ("dictation.ogg", "audio/ogg")
@@ -249,10 +292,7 @@ pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
 
 /// Model ids the provider currently offers to this key (OpenAI-compatible `GET /models`).
 pub fn list_models(cfg: &Config, timeout: Duration) -> Result<Vec<String>, CallError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| CallError::Network(e.to_string()))?;
+    let client = key_client(cfg, timeout)?;
     let mut request = client.get(format!("{}/models", cfg.base_url.trim_end_matches('/')));
     if let Some(key) = cfg.key.as_deref().filter(|k| !k.is_empty()) {
         request = request.bearer_auth(key);
@@ -381,10 +421,7 @@ fn chat_once(
     payload: &str,
     timeout: Duration,
 ) -> Result<(u16, String, Option<Duration>), CallError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| CallError::Network(e.to_string()))?;
+    let client = key_client(cfg, timeout)?;
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
     let mut request = client
         .post(url)
@@ -570,6 +607,65 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(s.join().unwrap(), 1);
+    }
+
+    #[test]
+    fn only_https_or_this_computer_may_receive_the_key() {
+        for ok in [
+            "https://api.groq.com/openai/v1",
+            "http://localhost:11434/v1",
+            "http://LOCALHOST:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            assert!(check_endpoint(ok).is_ok(), "{ok} should be allowed");
+        }
+        for bad in [
+            "http://localhost.attacker.example/v1",
+            "http://localhost@attacker.example/v1",
+            "http://127.0.0.1.attacker.example/v1",
+            "http://192.168.1.10:11434/v1",
+            "http://example.com/v1",
+            "https://user:pass@api.groq.com/openai/v1",
+            "https://api.groq.com/openai/v1?key=x",
+            "https://api.groq.com/openai/v1#x",
+            "ftp://api.groq.com/v1",
+            "file:///C:/key.txt",
+            "localhost:11434/v1",
+            "not a url",
+            "",
+        ] {
+            assert!(check_endpoint(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_bad_address_is_refused_before_any_request() {
+        let mut c = cfg("http://localhost.attacker.example/v1".into());
+        c.key = Some("sk-test".into());
+        assert!(matches!(
+            chat(&c, "s", "u", Duration::from_secs(2)),
+            Err(CallError::Network(_))
+        ));
+    }
+
+    #[test]
+    fn redirects_are_not_followed_so_the_key_stays_put() {
+        // The second server stands for an attacker: it must never be contacted.
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        other.set_nonblocking(true).unwrap();
+        let target = format!("http://{}/steal", other.local_addr().unwrap());
+        let redirect = raw(302, &format!("Location: {target}\r\n"), "");
+        let (url, s) = fake_replies(vec![redirect]);
+        let mut c = cfg(url);
+        c.key = Some("sk-test".into());
+        assert!(matches!(
+            chat(&c, "s", "u", Duration::from_secs(3)),
+            Err(CallError::Http(302, _))
+        ));
+        assert_eq!(s.join().unwrap(), 1);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(other.accept().is_err(), "the redirect target was contacted");
     }
 
     #[test]

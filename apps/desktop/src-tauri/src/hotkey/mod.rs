@@ -120,7 +120,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
         if !ours && (!injected || accept_injected()) {
             let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let decision = match HOOK.get().and_then(|h| h.lock().ok()) {
+            // Never block inside a low-level hook (Windows drops a hook that is too slow): a
+            // few quick tries, and if the state is busy the key simply passes through.
+            let decision = match HOOK.get().and_then(try_lock_briefly) {
                 Some(mut hook) => {
                     let d = hook.machine.on_key(info.vkCode, down, info.time);
                     if let Some(action) = d.action {
@@ -139,6 +141,18 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
     }
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// The hook state without waiting: up to ~200 quick tries (well under a millisecond).
+fn try_lock_briefly<T>(m: &std::sync::Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+    for _ in 0..200 {
+        match m.try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+            Err(std::sync::TryLockError::Poisoned(_)) => return None,
+        }
+    }
+    None
 }
 
 /// No shortcut in progress and no modifier held, so the hook can be swapped safely.

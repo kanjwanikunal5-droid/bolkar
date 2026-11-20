@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **19 November 2026** (versions 0.4.0 to 0.4.3 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **20 November 2026** (versions 0.4.0 to 0.4.4 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -824,6 +824,55 @@ The owner's 53 dictations have no corrected reference text, so they were judged 
 | Desktop UI in the browser preview | Settings > Writing shows the four Layout choices and "Learn from my corrections"; only the known "no Tauri in a browser" listener errors in the console |
 | `pnpm tauri build` | `Speak Flow_0.4.3_x64-setup.exe` built |
 | Install on the owner's laptop | not done from this session: installs started from Claude's sandbox land in Claude's private storage, not the owner's Windows profile. The owner runs the installer (see HOW_TO_USE) |
+
+## 20 November 2026: version 0.4.4 - fixes from the independent audit of 0.4.3
+
+The independent audit of 0.4.3 (ChatGPT, from the full review pack) scored it 6.2/10 and gave
+a remediation prompt; both are in `docs/audit-0.4.3/`. Every finding was checked in the code
+first. Plan: `docs/AUDIT_REMEDIATION_PLAN.md`; evidence: `docs/V0.4.4_TEST_REPORT.md`,
+`SECURITY_REGRESSION_REPORT.md`, `MEETING_REGRESSION_REPORT.md`, `ACCURACY_ENGLISH.csv`,
+`ACCURACY_HINGLISH.csv`; owner's hands-on list: `RELEASE_CHECKLIST.md`.
+
+- **Key-safe provider addresses (audit P0):** parsed URL; plain http only for localhost or a
+  loopback IP; no user info, query or fragment; checked again before every request carrying the
+  key; redirects never followed. Every address from the audit tested.
+- **Meeting loop (audit P0):** cause found by A/B on the same WAV - the 400-character dictionary
+  hint, full of the 346 pack words added in 0.4.3, made Whisper repeat one line 5 times and lose
+  3 turns. Hints now use only the user's own and learned words; a looping piece is recognised
+  again without the hint; 3+ identical lines in a row are collapsed. English test meeting:
+  20.67% -> 2.23% WER, all 13 turns once.
+- **Decisions (audit P0):** never "Confirmed" next to "check this"; the line before is cited when
+  it holds the condition. Audio sources are no longer listed as participants.
+- **Correction learning:** pinned to the window and text box it typed into; stops when the focus
+  moves; reads a few lines around the cursor; COM set up once; "Forget learned words".
+- **Smart layout:** only and/also/then/finally/lastly/aur/phir and order words may be left out,
+  and only where a new line starts (0.4.3 also allowed "we", "will", "is", "hai", "mein" ...).
+  One bullet style ("•") everywhere. Prompt v3.
+- **English + Hinglish routing:** an answer is used as English only if the Hindi-mode answer and
+  the local language check agree; when the AI step is limited, the Roman answer of the parallel
+  request is used instead of Hindi letters.
+- **Groq free daily limit (found during the benchmark):** 200,000 tokens per day for the
+  clean-up model, about 70-100 dictations. When it is reached, the next Groq model (own
+  allowance) is tried once, for dictation and meeting notes. Seen working in a self-test.
+- Smaller: upload counts per dictation in the diagnostics log; consent text states the fan-out;
+  the keyboard hook never blocks; Android recorder released only after its reader ends;
+  Settings text fixed (1 s pre-roll, no "never cut off" promise).
+
+### Measured (release-build self-tests, synthetic voices)
+
+| Set | WER | Tolerant | Note |
+|---|---|---|---|
+| English, 30 clips / 322 words | 0.62% | 0.62% | unchanged |
+| Hinglish A, 60 / 594 | 20.37% | 17.68% | run 1, before the routing fixes |
+| Hinglish B, 12 / 132 | 31.82% | 30.30% | run 1, worse than 0.4.2 (24.24%): causes fixed (see test report) |
+| Hinglish B, 6 clips after the fixes | 30.30% -> 21.21% | 27.27% -> 18.18% | same 6 clips; full re-run not run (Groq daily limit used up) |
+| Meeting, English 87 s | 20.67% -> 2.23% | | all 13 turns |
+| Meeting, mixed 64 s | 26.36% -> 24.55% | | Hinglish lines still misspelt by the local recogniser |
+
+Checks: `cargo fmt` clean, `clippy -D warnings` clean (also with dev tools), `cargo test`
+210 passed / 0 failed / 2 ignored, `tsc` clean (desktop, web). Not run: everything in
+`RELEASE_CHECKLIST.md` (needs the owner at the keyboard), real-voice accuracy (no references),
+the full Hinglish re-run after the fixes.
 
 ## Measured accuracy per language
 

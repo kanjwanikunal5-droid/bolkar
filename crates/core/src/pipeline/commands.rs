@@ -206,7 +206,7 @@ pub fn apply(text: &str, changes: &mut Vec<Change>) -> String {
     s = rewrite(&s, &BULLET, changes, &|b, a| {
         let sentence = next_adjacent_word(a)
             .is_some_and(|w| matches!(w.as_str(), "is" | "was" | "of" | "about"));
-        (!used_as_noun(b, &[]) && !sentence).then(|| line_break("\n- "))
+        (!used_as_noun(b, &[]) && !sentence).then(|| line_break("\n\u{2022} "))
     });
 
     // "Heading <title>" at the start of a line.
@@ -270,7 +270,7 @@ mod tests {
     fn bullets() {
         assert_eq!(
             run("Agenda for today. Bullet point, budget review. Bullet point, hiring plan."),
-            "Agenda for today.\n- Budget review.\n- Hiring plan."
+            "Agenda for today.\n\u{2022} Budget review.\n\u{2022} Hiring plan."
         );
     }
 

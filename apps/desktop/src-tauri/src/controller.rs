@@ -28,6 +28,9 @@ use crate::{db, models, providers, AppState};
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
 /// The smart layout of a long dictation; after this the text is typed as spoken.
 const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Recognition hints are kept short: a long word list makes Whisper loop on one sentence.
+const MEETING_HINT_CHARS: usize = 200;
+const DICTATION_HINT_CHARS: usize = 240;
 /// A Command Mode edit may rewrite a whole paragraph; it gets longer.
 const AI_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 /// Shown on the pill while Command Mode listens.
@@ -500,6 +503,19 @@ impl Controller {
     /// would translate real Hindi. So each Hindi-letter segment's audio is checked with the
     /// language detector on this computer; if it was English, the English-mode recognition of
     /// those seconds replaces it. Returns the corrected text, or None when nothing changed.
+    /// The local recogniser's language check on the first 30 s of the audio: Some(true) when it
+    /// hears Hinglish, None when no local model is installed.
+    fn local_says_hinglish(&mut self, samples: &[f32]) -> Option<bool> {
+        self.ensure_engine().ok()?;
+        let loaded = self.engine.as_ref()?;
+        let n = samples.len().min(app_asr::SAMPLE_RATE as usize * 30);
+        let p = loaded
+            .engine
+            .language_probabilities(&samples[..n], &["en", "hi"])
+            .ok()?;
+        Some(app_asr::is_hinglish(p[0], p[1]))
+    }
+
     fn rescue_english_parts(
         &mut self,
         cfg: &providers::Config,
@@ -587,6 +603,7 @@ impl Controller {
     /// Learns the corrections seen in the last dictation's text box (if any) and stops watching.
     fn learn_from_watch(&mut self) {
         let Some(w) = self.watch.take() else { return };
+        crate::learn_watch::release();
         let Some(corrected) = w.corrected else { return };
         let mut learned = 0;
         if let Ok(conn) = self.state().db.lock() {
@@ -826,10 +843,12 @@ impl Controller {
         }
         let mode = LanguageMode::from_setting(&self.state().setting("language"));
         let plan = language::plan(mode);
-        let (dictionary, _) = self.vocabulary();
-        let hint = dictionary.recogniser_hint(400);
+        let hint = self.own_words_hint(MEETING_HINT_CHARS);
         let rate = u64::from(app_asr::SAMPLE_RATE);
         let mut segments = Vec::new();
+        let (mut loops_retried, mut loop_copies) = (0usize, 0usize);
+        // Lines recognised as Hinglish (indices into `segments`), for the spelling polish.
+        let mut hinglish_lines: Vec<usize> = Vec::new();
         for (i, (path, speaker)) in tracks.iter().enumerate() {
             if !path.is_file() {
                 continue;
@@ -870,9 +889,26 @@ impl Controller {
                     },
                 };
                 let t = loaded.engine.transcribe(piece, &options)?;
+                let mut kept = app_asr::guard::kept_segments(&t.segments);
+                // The looping failure (one line again and again, the speech after it lost):
+                // recognise the piece once more without the hint, which is what triggers it.
+                if app_asr::guard::has_loop(&kept) && options.initial_prompt.is_some() {
+                    let plain = Options {
+                        initial_prompt: None,
+                        ..options.clone()
+                    };
+                    if let Ok(again) = loaded.engine.transcribe(piece, &plain) {
+                        let retry = app_asr::guard::kept_segments(&again.segments);
+                        if !app_asr::guard::has_loop(&retry) {
+                            kept = retry;
+                            loops_retried += 1;
+                        }
+                    }
+                }
+                loop_copies += app_asr::guard::collapse_line_loops(&mut kept);
                 let base_ms = (start + offset) as u64 * 1000 / rate;
                 let piece_ms = piece.len() as u64 * 1000 / rate;
-                for (s, e, text) in app_asr::guard::kept_segments(&t.segments) {
+                for (s, e, text) in kept {
                     let text =
                         if lang == RecogniserLanguage::HindiRoman && !llm::has_devanagari(&text) {
                             app_core::hinglish::normalise(&text)
@@ -884,6 +920,9 @@ impl Controller {
                     }
                     let s = (s.max(0) as u64).min(piece_ms);
                     let e = (e.max(0) as u64).clamp(s, piece_ms);
+                    if lang == RecogniserLanguage::HindiRoman {
+                        hinglish_lines.push(segments.len());
+                    }
                     segments.push(app_core::summary::Segment {
                         id: String::new(),
                         start_ms: base_ms + s,
@@ -895,7 +934,16 @@ impl Controller {
             }
             next[i] = start + consumed;
         }
+        if loops_retried + loop_copies > 0 {
+            crate::diag::log(
+                "meeting",
+                &format!(
+                    "repeated-line loop: {loops_retried} piece(s) recognised again without the hint, {loop_copies} repeated line(s) removed"
+                ),
+            );
+        }
         self.romanise_segments(&mut segments, mode);
+        self.polish_meeting_hinglish(&mut segments, &hinglish_lines);
         Ok(MeetingChunk {
             segments,
             next,
@@ -932,6 +980,77 @@ impl Controller {
         }
     }
 
+    /// The Hinglish spelling polish of dictation, for the Hinglish lines of a meeting ("Is
+    /// Maheen ka" -> "Is mahine ka"), up to 15 lines per request. Each line is checked on its
+    /// own by `llm::parse_polish` (a rewrite is refused and the line kept as recognised).
+    fn polish_meeting_hinglish(
+        &self,
+        segments: &mut [app_core::summary::Segment],
+        lines: &[usize],
+    ) {
+        let lines: Vec<usize> = lines
+            .iter()
+            .copied()
+            .filter(|&i| i < segments.len() && !llm::has_devanagari(&segments[i].text))
+            .collect();
+        let (mut fixed, mut kept) = (0, 0);
+        for batch in lines.chunks(15) {
+            let input: Vec<&str> = batch.iter().map(|&i| segments[i].text.as_str()).collect();
+            let system = format!(
+                "{}\nThe input is {{\"lines\": [..]}}: polish every line on its own and reply \
+                 {{\"lines\": [..]}} with the same number of lines in the same order.",
+                llm::hinglish_polish_prompt()
+            );
+            let user = serde_json::json!({ "lines": input }).to_string();
+            let answer = match self.ai_raw(
+                &system,
+                &user,
+                "Hinglish spelling (meeting)",
+                AI_TIMEOUT * 4,
+            ) {
+                Ok(a) => a,
+                Err(_) => {
+                    kept += batch.len();
+                    continue;
+                }
+            };
+            let out: Vec<String> = answer
+                .find('{')
+                .zip(answer.rfind('}'))
+                .and_then(|(s, e)| serde_json::from_str::<serde_json::Value>(&answer[s..=e]).ok())
+                .and_then(|v| {
+                    v["lines"].as_array().map(|a| {
+                        a.iter()
+                            .map(|l| l.as_str().unwrap_or_default().to_string())
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            if out.len() != batch.len() {
+                kept += batch.len();
+                continue;
+            }
+            for (&i, polished) in batch.iter().zip(out) {
+                let reply = serde_json::json!({ "text": polished }).to_string();
+                match llm::parse_polish(&reply, &segments[i].text) {
+                    Ok(p) => {
+                        if p != segments[i].text {
+                            fixed += 1;
+                        }
+                        segments[i].text = p;
+                    }
+                    Err(_) => kept += 1,
+                }
+            }
+        }
+        if fixed + kept > 0 {
+            crate::diag::log(
+                "meeting",
+                &format!("Hinglish spelling: {fixed} line(s) corrected, {kept} kept as recognised"),
+            );
+        }
+    }
+
     /// Hinglish spelling polish (bahut, karunga, ...) and obvious mis-hearings; checked by
     /// `llm::parse_polish`, which rejects rewrites.
     fn polish_hinglish(&self, text: &str) -> Result<String, String> {
@@ -953,7 +1072,32 @@ impl Controller {
         timeout: Duration,
     ) -> Result<String, String> {
         let cfg = crate::ai_config(&self.state()).ok_or("AI clean-up is off")?;
-        let result = providers::chat(&cfg, system, user, timeout);
+        let mut result = self.ai_attempt(&cfg, system, user, purpose, timeout);
+        // Groq's free plan has a daily token limit per model (200,000 for the clean-up model,
+        // about 70-100 dictations; measured 20 Nov 2026). When it is reached, the next model has
+        // its own allowance: one more try there. Its answer goes through the same checks.
+        if matches!(result, Err(providers::CallError::RateLimited)) {
+            if let Some(alt) = crate::fallback_cleanup_model(&cfg) {
+                let alt_cfg = providers::Config {
+                    model: alt,
+                    ..cfg.clone()
+                };
+                result = self.ai_attempt(&alt_cfg, system, user, purpose, timeout);
+            }
+        }
+        result.map(|a| a.content).map_err(|e| e.to_string())
+    }
+
+    /// One AI request, logged in "Data that left this computer".
+    fn ai_attempt(
+        &self,
+        cfg: &providers::Config,
+        system: &str,
+        user: &str,
+        purpose: &str,
+        timeout: Duration,
+    ) -> Result<providers::Answer, providers::CallError> {
+        let result = providers::chat(cfg, system, user, timeout);
         if let Ok(conn) = self.state().db.lock() {
             let outcome = result
                 .as_ref()
@@ -970,7 +1114,29 @@ impl Controller {
                 ),
             );
         }
-        result.map(|a| a.content).map_err(|e| e.to_string())
+        result
+    }
+
+    /// The recognition hint ("Glossary: ...") from the words the user added or that were learned
+    /// from their corrections, never the built-in packs. Measured 20 Nov 2026: with the 346
+    /// pack words in a 400-character hint, Whisper repeated one sentence of the 87 s test meeting
+    /// five times and skipped three others; without them all 13 turns came back.
+    fn own_words_hint(&self, max_chars: usize) -> String {
+        let state = self.state();
+        let Ok(conn) = state.db.lock() else {
+            return String::new();
+        };
+        let terms = db::list_terms(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.source != "pack")
+            .map(|t| Term {
+                term: t.term,
+                spoken_variants: t.spoken_variants,
+                auto_replace: t.auto_replace,
+            })
+            .collect();
+        Dictionary::new(terms).recogniser_hint(max_chars)
     }
 
     /// The user's dictionary and snippets, read fresh for each dictation.
@@ -1120,7 +1286,7 @@ impl Controller {
         let mode = LanguageMode::from_setting(&self.state().setting("language"));
         let language = mode.setting().to_string();
         let (dictionary, snippets) = self.vocabulary();
-        let hint = dictionary.recogniser_hint(400);
+        let hint = self.own_words_hint(DICTATION_HINT_CHARS);
         // "en-hinglish" = English or Hinglish, decided per dictation; "hinglish" = always Hinglish.
         let hinglish_mode = mode.allows_hinglish();
         let lang = match mode {
@@ -1128,6 +1294,13 @@ impl Controller {
             LanguageMode::Hinglish => Some(RecogniserLanguage::HindiRoman.code().to_string()),
             LanguageMode::English => Some(RecogniserLanguage::English.code().to_string()),
         };
+        // Uploads of this dictation are counted from here (for the timing log).
+        let events_before = self
+            .state()
+            .db
+            .lock()
+            .map(|c| db::last_event_id(&c))
+            .unwrap_or(0);
         let started = Instant::now();
 
         let has_speech = samples.len() >= app_asr::SAMPLE_RATE as usize / 4
@@ -1166,6 +1339,9 @@ impl Controller {
         let mut cloud_note = None;
         let mut recognised: Option<(String, String)> = None;
         let mut used_cloud = false;
+        // A Roman-letter answer from the no-fixed-language request, kept in case the Hindi-mode
+        // answer comes back in Hindi letters and cannot be converted (AI limit reached).
+        let mut roman_alternative: Option<String> = None;
         if let Some(cfg) = cloud_cfg {
             // Compressed (Ogg/Opus, about 12 times smaller than WAV, same accuracy measured on
             // 45 clips): the upload is most of the waiting time on a slow connection.
@@ -1189,7 +1365,7 @@ impl Controller {
             // example, as before: best for Hindi-heavy speech. (1) is used when it is plain
             // English; otherwise (2), with its English parts re-checked.
             let auto_answer = if language == "en-hinglish" {
-                let glossary = dictionary.recogniser_hint(160);
+                let glossary = self.own_words_hint(160);
                 let mixed = format!(
                     "{} {glossary}{name_hint}",
                     llm::MIXED_ENGLISH_HINGLISH_EXAMPLE
@@ -1211,6 +1387,11 @@ impl Controller {
                 CLOUD_ASR_TIMEOUT,
             );
             let auto_answer = auto_answer.and_then(|h| h.join().ok());
+            roman_alternative = auto_answer
+                .as_ref()
+                .and_then(|a| a.as_ref().ok())
+                .map(|(t, _)| t.trim().to_string())
+                .filter(|t| !t.is_empty() && !llm::has_non_roman_indic(t));
             if let (Some(a), Ok(conn)) = (&auto_answer, self.state().db.lock()) {
                 db::log_event(
                     &conn,
@@ -1232,7 +1413,25 @@ impl Controller {
                         !t.trim().is_empty()
                             && !llm::has_non_roman_indic(t)
                             && !app_core::hinglish::looks_hinglish(t)
+                            // The Hindi-mode answer for the same audio says the speech was
+                            // mostly Hindi: then this Roman "English" is misheard Hinglish.
+                            && !timed.as_ref().is_ok_and(|(h, _, _)| {
+                                app_core::language::hindi_mode_says_hindi(h)
+                            })
                     });
+            // Third opinion (20 Nov 2026, set B: "Kal meeting 4 bajay hay" passed both checks
+            // above): the local language check on this computer's graphics card. If it hears
+            // Hinglish, the Hindi-mode answer is used instead.
+            let plain_english = match plain_english {
+                Some(_) if self.local_says_hinglish(&samples) == Some(true) => {
+                    crate::diag::log(
+                        "recognition",
+                        "no-fixed-language answer looked English, local check heard Hinglish: Hindi mode used",
+                    );
+                    None
+                }
+                other => other,
+            };
             if let Some((t, took)) = plain_english {
                 used_cloud = true;
                 recognised = Some((
@@ -1356,7 +1555,17 @@ impl Controller {
                     to_clean = app_core::hinglish::normalise(&raw);
                     engine_label.push_str(" + Roman Hinglish (AI)");
                 }
-                Err(why) => engine_label.push_str(&format!(" (Devanagari kept: {why})")),
+                Err(why) => match roman_alternative.take() {
+                    // Better than Hindi letters: the same audio, recognised in Roman letters.
+                    Some(alt) if used_cloud => {
+                        raw = alt;
+                        to_clean = app_core::hinglish::normalise(&raw);
+                        engine_label.push_str(&format!(
+                            " (Roman from the no-fixed-language answer; AI conversion: {why})"
+                        ));
+                    }
+                    _ => engine_label.push_str(&format!(" (Devanagari kept: {why})")),
+                },
             }
         } else if hinglish_route && !raw.is_empty() {
             // Already Roman: offline spelling table, then the AI spelling polish when allowed.
@@ -1484,16 +1693,24 @@ impl Controller {
         // Learning: watch the text box this went into for the user's corrections.
         if let (Some(o), Some(t)) = (&outcome, &target) {
             if o.inserted() && self.state().setting("learn_from_edits") != "off" {
-                self.watch = Some(crate::learn_watch::Watch::new(t.pid, &final_text));
+                // Pinned to this window and text box; not watched if the box cannot be pinned.
+                self.watch = crate::learn_watch::Watch::start(t.pid, t.hwnd, &final_text);
+                if self.watch.is_none() {
+                    crate::diag::log(
+                        "learn",
+                        "this text box cannot be pinned: not watched for corrections",
+                    );
+                }
             }
         }
         // Local timing log, so speed can be measured on real use (no text is stored here).
         if let Ok(conn) = self.state().db.lock() {
+            let (audio_up, text_up) = db::uploads_since(&conn, events_before);
             db::log_event(
                 &conn,
                 "timing",
                 &format!(
-                    "audio {audio_ms} ms | recognition {transcribe_ms} ms ({engine_label}) | clean-up {clean_ms} ms ({cleanup}) | insert {} ms",
+                    "audio {audio_ms} ms | recognition {transcribe_ms} ms ({engine_label}) | clean-up {clean_ms} ms ({cleanup}) | insert {} ms | uploads: {audio_up} audio, {text_up} text",
                     insert_started.elapsed().as_millis()
                 ),
             );

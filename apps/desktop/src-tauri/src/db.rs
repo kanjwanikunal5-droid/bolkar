@@ -269,6 +269,26 @@ pub fn log_event(conn: &Connection, kind: &str, detail: &str) {
     }
 }
 
+/// The id of the newest event (0 when there is none).
+pub fn last_event_id(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))
+        .unwrap_or(0)
+}
+
+/// Uploads logged after event `after`: (audio requests, text requests).
+pub fn uploads_since(conn: &Connection, after: i64) -> (i64, i64) {
+    let count = |like: &str, not: bool| -> i64 {
+        let sql = if not {
+            "SELECT COUNT(*) FROM events WHERE kind = 'upload' AND id > ?1 AND detail NOT LIKE ?2"
+        } else {
+            "SELECT COUNT(*) FROM events WHERE kind = 'upload' AND id > ?1 AND detail LIKE ?2"
+        };
+        conn.query_row(sql, params![after, like], |r| r.get(0))
+            .unwrap_or(0)
+    };
+    (count("%audio%", false), count("%audio%", true))
+}
+
 pub fn list_events(conn: &Connection, kind: &str, limit: u32) -> Result<Vec<EventRow>, String> {
     let mut stmt = conn
         .prepare("SELECT at, kind, detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT ?2")
@@ -950,6 +970,12 @@ pub fn usage_rows(conn: &Connection) -> Result<Vec<UsageRow>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Deletes every word learned from the user's corrections; returns how many were deleted.
+pub fn delete_learned_terms(conn: &Connection) -> Result<usize, String> {
+    conn.execute("DELETE FROM dictionary_terms WHERE source = 'learned'", [])
+        .map_err(|e| e.to_string())
+}
+
 /// Number of dictionary entries from one source ("manual", "learned" or "pack").
 pub fn count_terms(conn: &Connection, source: &str) -> i64 {
     conn.query_row(
@@ -994,6 +1020,37 @@ mod tests {
             error: None,
             cleanup: "rules".into(),
         }
+    }
+
+    #[test]
+    fn uploads_of_one_dictation_are_counted() {
+        let conn = open_in_memory().unwrap();
+        log_event(
+            &conn,
+            "upload",
+            "groq (whisper-large-v3): dictation audio for speech recognition, 10 bytes, ok",
+        );
+        let before = last_event_id(&conn);
+        log_event(&conn, "upload", "groq (whisper-large-v3): dictation audio for speech recognition (no fixed language), 10 bytes, ok");
+        log_event(
+            &conn,
+            "upload",
+            "groq (whisper-large-v3): dictation audio for speech recognition, 10 bytes, ok",
+        );
+        log_event(
+            &conn,
+            "upload",
+            "groq (qwen): dictation text for clean-up, 10 bytes, ok",
+        );
+        log_event(&conn, "timing", "audio 1 ms");
+        assert_eq!(uploads_since(&conn, before), (2, 1));
+        let (forgot, kept) = (
+            upsert_term(&conn, "Henglish", &[], "learned", true),
+            upsert_term(&conn, "Groq", &[], "manual", false),
+        );
+        assert!(forgot.is_ok() && kept.is_ok());
+        assert_eq!(delete_learned_terms(&conn).unwrap(), 1);
+        assert_eq!(count_terms(&conn, "manual"), 1);
     }
 
     #[test]

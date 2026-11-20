@@ -25,6 +25,10 @@ class Recorder {
     @Volatile var error: String? = null
         private set
 
+    /** Set when the last stop() could not end the reader thread in time (null when it did). */
+    @Volatile var stopProblem: String? = null
+        private set
+
     /** False when the microphone could not be opened (no permission, or in use). */
     @SuppressLint("MissingPermission") // checked by the caller
     fun start(): Boolean {
@@ -111,9 +115,25 @@ class Recorder {
             }
         }
         thread = null
-        r?.release()
         record = null
         level = 0f
+        if (t != null && t.isAlive) {
+            // The reader is still inside read(): releasing the microphone now could crash it.
+            // Release it once the reader has really ended, and tell the caller.
+            stopProblem = "The microphone did not stop in time; it is released in the background."
+            Thread {
+                t.join(10_000)
+                if (!t.isAlive) {
+                    try {
+                        r?.release()
+                    } catch (_: Exception) {
+                    }
+                }
+            }.apply { isDaemon = true }.start()
+        } else {
+            stopProblem = null
+            r?.release()
+        }
         return synchronized(pcm) { pcm.toByteArray() }
     }
 
