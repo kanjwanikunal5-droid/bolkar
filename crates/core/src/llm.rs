@@ -243,10 +243,12 @@ pub fn build_cleanup_styled(
         Level::Professional => "PROFESSIONAL",
         _ => "LIGHT",
     };
-    let terms = if dictionary_terms.is_empty() {
+    // Only the terms that matter for this text (see `dictionary::relevant_terms`).
+    let relevant = crate::dictionary::relevant_terms(dictionary_terms, &prepared.text, 40);
+    let terms = if relevant.is_empty() {
         "(none)".to_string()
     } else {
-        dictionary_terms.join(", ")
+        relevant.join(", ")
     };
     let system = cleanup_template()
         .replace("{style_description}", style_text)
