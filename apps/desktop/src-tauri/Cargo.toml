@@ -78,3 +78,9 @@ name = "layout-eval"
 path = "src/bin/layout-eval.rs"
 test = false
 required-features = ["dev-tools"]
+
+[[bin]]
+name = "chunk-eval"
+path = "src/bin/chunk-eval.rs"
+test = false
+required-features = ["dev-tools"]
