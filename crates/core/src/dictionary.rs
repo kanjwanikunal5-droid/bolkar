@@ -3,10 +3,11 @@
 //! Stage 0 matches the term itself and its listed spoken variants, ignoring case. It never
 //! replaces a different word just because it sounds similar.
 
-use regex::{Captures, Regex};
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::tokens::phrase_regex;
+use crate::pipeline::tokens::is_word_char;
 use crate::pipeline::{Change, ChangeKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +54,10 @@ impl Term {
 
 #[derive(Debug, Clone, Default)]
 pub struct Dictionary {
-    rules: Vec<(Regex, String)>,
+    /// Spoken phrase (lower-case words joined by single spaces) -> term to write.
+    phrases: HashMap<String, String>,
+    /// Most words in any spoken phrase.
+    max_words: usize,
     terms: Vec<String>,
 }
 
@@ -67,13 +71,26 @@ impl Dictionary {
                 pairs.push((v.clone(), t.term.clone()));
             }
         }
-        // Longest spoken form first, so "power bi desktop" wins over "power bi".
+        // One lookup table instead of one search pattern per word: measured 21 Nov 2026, 5,000
+        // terms took 1.31 s to build and 117 ms to apply as patterns on every dictation.
+        // Longest spoken form first, so "power bi desktop" wins over "power bi"; for the same
+        // spoken form the first term listed wins.
         pairs.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
-        let rules = pairs
-            .into_iter()
-            .filter_map(|(spoken, term)| phrase_regex(&spoken, r"\s\-").map(|re| (re, term)))
-            .collect();
-        Self { rules, terms: all }
+        let mut phrases = HashMap::new();
+        let mut max_words = 0;
+        for (spoken, term) in pairs {
+            let words = phrase_words(&spoken);
+            if words.is_empty() {
+                continue;
+            }
+            max_words = max_words.max(words.len());
+            phrases.entry(words.join(" ")).or_insert(term);
+        }
+        Self {
+            phrases,
+            max_words,
+            terms: all,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -115,24 +132,88 @@ impl Dictionary {
         }
     }
 
+    /// Writes every listed term its way. Words match ignoring case and must be separated only
+    /// by spaces or hyphens; at each word the longest listed phrase wins; replaced text is not
+    /// matched again.
     pub fn apply(&self, text: &str, changes: &mut Vec<Change>) -> String {
-        let mut out = text.to_string();
-        for (re, term) in &self.rules {
-            out = re
-                .replace_all(&out, |caps: &Captures| {
-                    if &caps[0] != term {
+        if self.phrases.is_empty() {
+            return text.to_string();
+        }
+        let spans = word_spans(text);
+        let mut out = String::with_capacity(text.len());
+        let (mut copied, mut i) = (0, 0);
+        while i < spans.len() {
+            let mut found = None;
+            let longest = self.max_words.min(spans.len() - i);
+            for n in (1..=longest).rev() {
+                let joined_ok = (i + 1..i + n).all(|k| {
+                    let sep = &text[spans[k - 1].1..spans[k].0];
+                    !sep.is_empty() && sep.chars().all(|c| c.is_whitespace() || c == '-')
+                });
+                if !joined_ok {
+                    continue;
+                }
+                let key = spans[i..i + n]
+                    .iter()
+                    .map(|&(a, b)| text[a..b].to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if let Some(term) = self.phrases.get(&key) {
+                    found = Some((n, term));
+                    break;
+                }
+            }
+            match found {
+                Some((n, term)) => {
+                    let (start, end) = (spans[i].0, spans[i + n - 1].1);
+                    out.push_str(&text[copied..start]);
+                    let before = &text[start..end];
+                    if before != term {
                         changes.push(Change {
                             kind: ChangeKind::Dictionary,
-                            before: caps[0].to_string(),
+                            before: before.to_string(),
                             after: term.clone(),
                         });
                     }
-                    term.clone()
-                })
-                .into_owned();
+                    out.push_str(term);
+                    copied = end;
+                    i += n;
+                }
+                None => i += 1,
+            }
         }
+        out.push_str(&text[copied..]);
         out
     }
+}
+
+/// The words of a spoken form, lower case (what a phrase is looked up by).
+fn phrase_words(spoken: &str) -> Vec<String> {
+    spoken
+        .split(|c: char| !is_word_char(c))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Byte ranges of the words in a text.
+fn word_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        match (is_word_char(c), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                spans.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, text.len()));
+    }
+    spans
 }
 
 /// The dictionary terms worth giving the AI clean-up for this text: terms whose words all occur
@@ -226,6 +307,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn one_pass_lookup_matches_like_the_old_patterns() {
+        let d = Dictionary::new(vec![
+            Term::with_variants("Power BI", &["power bee eye"]),
+            Term::new("Power BI Desktop"),
+            Term::with_variants("XLOOKUP", &["x lookup"]),
+            Term::with_variants("mujhe", &["muje"]),
+        ]);
+        let mut c = Vec::new();
+        // Longest phrase wins; case is fixed; hyphen counts as a space; punctuation does not.
+        assert_eq!(
+            d.apply(
+                "open power bi desktop, then power bee eye and X-lookup. Muje x. lookup",
+                &mut c
+            ),
+            "open Power BI Desktop, then Power BI and XLOOKUP. mujhe x. lookup"
+        );
+        assert_eq!(c.len(), 4);
+        // Inside a longer word nothing changes.
+        assert_eq!(d.apply("mujhey powerbi", &mut Vec::new()), "mujhey powerbi");
+        assert_eq!(d.apply("", &mut Vec::new()), "");
+    }
+
+    #[test]
     fn only_terms_that_matter_for_the_text_go_to_the_ai() {
         let mut terms: Vec<String> = (0..2000).map(|i| format!("Term{i} Word{i}")).collect();
         terms.extend(["Power Query", "Kaggle", "ITR", "CIBIL", "Zomato"].map(String::from));
@@ -305,5 +409,35 @@ mod tests {
         let mut changes = Vec::new();
         dict().apply("EBITDA is up.", &mut changes);
         assert!(changes.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+
+    /// Run by hand: cargo test -p app-core --release dictionary::timing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn five_thousand_words() {
+        let terms: Vec<Term> = (0..5000)
+            .map(|i| Term {
+                term: format!("Termword{i}"),
+                spoken_variants: vec![format!("term word {i}"), format!("termwurd{i}")],
+                auto_replace: true,
+            })
+            .collect();
+        let text = "Today I filed my ITR and checked the dashboard, then I spoke for three minutes about the budget, the forecast and the next steps for the team. ".repeat(6);
+        let t0 = std::time::Instant::now();
+        let d = Dictionary::new(terms);
+        let build = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let out = d.apply(&text, &mut Vec::new());
+        let apply = t1.elapsed();
+        println!(
+            "5000 terms: build {build:?}, apply to {} words {apply:?}",
+            text.split_whitespace().count()
+        );
+        assert_eq!(out.len(), text.len());
     }
 }

@@ -26,6 +26,13 @@ use crate::{db, models, providers, AppState};
 
 /// The AI clean-up must answer within this time, or the rules are used instead.
 const AI_TIMEOUT: Duration = Duration::from_millis(2500);
+
+/// The AI step's time limit for a text: 2.5 s, plus 12 ms per word for long dictations (the
+/// answer is as long as the text), at most 9 s. A 3-minute dictation (~450 words) gets 7.9 s.
+fn ai_timeout_for(text: &str) -> Duration {
+    let words = text.split_whitespace().count() as u64;
+    (AI_TIMEOUT + Duration::from_millis(12 * words)).min(Duration::from_secs(9))
+}
 /// The smart layout of a long dictation; after this the text is typed as spoken.
 const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Recognition hints are kept short: a long word list makes Whisper loop on one sentence.
@@ -503,6 +510,263 @@ impl Controller {
     /// would translate real Hindi. So each Hindi-letter segment's audio is checked with the
     /// language detector on this computer; if it was English, the English-mode recognition of
     /// those seconds replaces it. Returns the corrected text, or None when nothing changed.
+    /// A long dictation through Groq in pieces of at most ~29 s, all sent at the same time (see
+    /// `long.rs` for why). Per piece: in English + Hinglish mode the no-fixed-language answer
+    /// is used when it is plain English (and the local check agrees); other pieces get a
+    /// Hindi-mode request with their English parts re-checked. A piece whose request fails is
+    /// recognised on this computer; a piece with far too few words for its speech is
+    /// recognised again in two halves and the fuller answer kept. Returns (text, label, Roman
+    /// alternative for pieces left in Hindi letters).
+    #[allow(clippy::too_many_arguments)]
+    fn recognise_long_cloud(
+        &mut self,
+        cfg: &providers::Config,
+        samples: &[f32],
+        language: &str,
+        hint: &str,
+        name_hint: &str,
+        quiet: bool,
+    ) -> Option<(String, String, Option<String>)> {
+        let pieces: Vec<(usize, &[f32])> = crate::meeting::split_for_recognition(samples);
+        let n = pieces.len();
+        let mixed = format!(
+            "{} {}{name_hint}",
+            llm::MIXED_ENGLISH_HINGLISH_EXAMPLE,
+            self.own_words_hint(160)
+        );
+        let roman = format!("{}{name_hint}", llm::ROMAN_HINGLISH_EXAMPLE);
+        let english = format!("{hint}{name_hint}");
+        let (first_lang, first_prompt) = match language {
+            "en" => (Some("en"), english.trim().to_string()),
+            "hinglish" => (Some("hi"), roman.trim().to_string()),
+            _ => (None, mixed.trim().to_string()),
+        };
+        let first_prompt = Some(first_prompt.as_str()).filter(|p| !p.is_empty());
+        let both = language == "en-hinglish";
+        // Round 1 on the network; meanwhile the local language check per piece (GPU).
+        let (first, local): (Vec<_>, Vec<Option<bool>>) = std::thread::scope(|s| {
+            let net = s.spawn(|| {
+                crate::long::parallel(&pieces, crate::long::MAX_IN_FLIGHT, |(_, p)| {
+                    crate::long::piece_request(cfg, p, first_lang, first_prompt, CLOUD_ASR_TIMEOUT)
+                })
+            });
+            let local = if both {
+                pieces
+                    .iter()
+                    .map(|(_, p)| self.local_says_hinglish(p))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (net.join().unwrap_or_default(), local)
+        });
+        if first.len() != n {
+            return None;
+        }
+        let bytes: usize = first.iter().map(|(_, b)| *b).sum();
+        let ok = first.iter().filter(|(r, _)| r.is_ok()).count();
+        self.log_upload(&format!(
+            "{} ({}): dictation audio for speech recognition in {n} pieces{}, {bytes} bytes, {ok} of {n} ok",
+            cfg.provider,
+            cfg.model,
+            if first_lang.is_none() { " (no fixed language)" } else { "" }
+        ));
+        let mut texts: Vec<Option<String>> = vec![None; n];
+        let mut romans: Vec<Option<String>> = vec![None; n];
+        let mut hindi: Vec<usize> = Vec::new();
+        for (i, (result, _)) in first.iter().enumerate() {
+            match result {
+                Ok((t, _, _)) if both => {
+                    let roman_letters = !t.trim().is_empty() && !llm::has_non_roman_indic(t);
+                    if roman_letters {
+                        romans[i] = Some(t.clone());
+                    }
+                    if roman_letters
+                        && !app_core::hinglish::looks_hinglish(t)
+                        && local.get(i).copied().flatten() != Some(true)
+                    {
+                        texts[i] = Some(t.clone());
+                    } else {
+                        hindi.push(i);
+                    }
+                }
+                Ok((t, segments, _)) => {
+                    let mut text = t.clone();
+                    if language == "hinglish" {
+                        if let Some(fixed) =
+                            self.rescue_english_parts(cfg, pieces[i].1, segments, name_hint)
+                        {
+                            text = fixed;
+                        }
+                    }
+                    texts[i] = Some(text);
+                }
+                // Refused or failed: recognised on this computer below (no waiting).
+                Err(_) => {}
+            }
+        }
+        // Round 2 (English + Hinglish): Hindi mode for the pieces that sounded Hinglish.
+        if !hindi.is_empty() {
+            let second = crate::long::parallel(&hindi, crate::long::MAX_IN_FLIGHT, |&i| {
+                crate::long::piece_request(
+                    cfg,
+                    pieces[i].1,
+                    Some("hi"),
+                    Some(roman.trim()),
+                    CLOUD_ASR_TIMEOUT,
+                )
+            });
+            let bytes: usize = second.iter().map(|(_, b)| *b).sum();
+            let ok = second.iter().filter(|(r, _)| r.is_ok()).count();
+            self.log_upload(&format!(
+                "{} ({}): dictation audio for speech recognition (Hinglish pieces), {bytes} bytes, {ok} of {} ok",
+                cfg.provider,
+                cfg.model,
+                hindi.len()
+            ));
+            for (&i, (result, _)) in hindi.iter().zip(second) {
+                match result {
+                    Ok((t, segments, _)) => {
+                        let fixed =
+                            self.rescue_english_parts(cfg, pieces[i].1, &segments, name_hint);
+                        texts[i] = Some(fixed.unwrap_or(t));
+                    }
+                    // Hindi mode failed: the no-fixed-language answer is better than nothing.
+                    Err(_) => {
+                        if let Ok((t, _, _)) = &first[i].0 {
+                            texts[i] = Some(t.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // No piece may be lost: one whose requests failed is recognised on this computer.
+        let mut local_pieces = 0;
+        for i in 0..n {
+            if texts[i].is_none() {
+                if let Some(t) =
+                    self.recognise_piece_locally(pieces[i].1, language, hint, name_hint)
+                {
+                    texts[i] = Some(t);
+                    local_pieces += 1;
+                }
+            }
+        }
+        // Completeness: far too few words for the speech in a piece -> again in two halves.
+        let mut redone = 0;
+        for i in 0..n {
+            let Some(t) = texts[i].clone() else { continue };
+            let voiced = crate::long::voiced_seconds(pieces[i].1);
+            if !crate::long::looks_incomplete(t.split_whitespace().count(), voiced) {
+                continue;
+            }
+            let lang = if hindi.contains(&i) {
+                Some("hi")
+            } else {
+                first_lang
+            };
+            let prompt = if lang == Some("hi") {
+                Some(roman.trim())
+            } else {
+                first_prompt
+            };
+            let halves = crate::long::halves(pieces[i].1);
+            let again = crate::long::parallel(&halves, 2, |h| {
+                crate::long::piece_request(cfg, h, lang, prompt, CLOUD_ASR_TIMEOUT)
+            });
+            if let [(Ok((a, _, _)), _), (Ok((b, _, _)), _)] = again.as_slice() {
+                let joined = crate::long::join_pieces(&[a.clone(), b.clone()]);
+                let (before, after) = (
+                    t.split_whitespace().count(),
+                    joined.split_whitespace().count(),
+                );
+                if after > before {
+                    crate::diag::log(
+                        "recognition",
+                        &format!(
+                            "piece {} of {n} recognised again: {before} -> {after} words",
+                            i + 1
+                        ),
+                    );
+                    texts[i] = Some(joined);
+                    redone += 1;
+                }
+            }
+        }
+        if texts.iter().any(Option::is_none) {
+            return None;
+        }
+        let texts: Vec<String> = texts
+            .into_iter()
+            .map(|t| app_asr::guard::filter_text(&t.unwrap_or_default(), quiet))
+            .collect();
+        let joined = crate::long::join_pieces(&texts);
+        let roman_alt = texts.iter().any(|t| llm::has_devanagari(t)).then(|| {
+            let parts: Vec<String> = texts
+                .iter()
+                .zip(&romans)
+                .map(|(t, r)| match r {
+                    Some(r) if llm::has_devanagari(t) => r.clone(),
+                    _ => t.clone(),
+                })
+                .collect();
+            crate::long::join_pieces(&parts)
+        });
+        let mut label = format!("Groq - {} ({n} pieces", cfg.model);
+        if !hindi.is_empty() {
+            label.push_str(&format!(", {} in Hinglish", hindi.len()));
+        }
+        if redone > 0 {
+            label.push_str(&format!(", {redone} redone"));
+        }
+        if local_pieces > 0 {
+            label.push_str(&format!(", {local_pieces} on this computer"));
+        }
+        label.push(')');
+        Some((joined, label, roman_alt))
+    }
+
+    /// One piece on this computer (when its cloud requests failed, or without Groq).
+    fn recognise_piece_locally(
+        &mut self,
+        piece: &[f32],
+        language: &str,
+        hint: &str,
+        name_hint: &str,
+    ) -> Option<String> {
+        self.ensure_engine().ok()?;
+        let hinglish = match language {
+            "hinglish" => true,
+            "en" => false,
+            _ => self.local_says_hinglish(piece) == Some(true),
+        };
+        let loaded = self.engine.as_ref()?;
+        let options = if hinglish {
+            Options {
+                language: Some("hi".into()),
+                initial_prompt: Some(format!("{}{name_hint}", llm::ROMAN_HINGLISH_EXAMPLE)),
+                ..Default::default()
+            }
+        } else {
+            Options {
+                language: Some("en".into()),
+                initial_prompt: Some(format!("{hint}{name_hint}")).filter(|p| !p.trim().is_empty()),
+                ..Default::default()
+            }
+        };
+        loaded
+            .engine
+            .transcribe(piece, &options)
+            .ok()
+            .map(|t| t.text.trim().to_string())
+    }
+
+    fn log_upload(&self, detail: &str) {
+        if let Ok(conn) = self.state().db.lock() {
+            db::log_event(&conn, "upload", detail);
+        }
+    }
+
     /// The local recogniser's language check on the first 30 s of the audio: Some(true) when it
     /// hears Hinglish, None when no local model is installed.
     fn local_says_hinglish(&mut self, samples: &[f32]) -> Option<bool> {
@@ -1061,7 +1325,7 @@ impl Controller {
     /// Sends dictation text to the user's AI provider and logs the upload.
     fn ai_text(&self, system: &str, text: &str, purpose: &str) -> Result<String, String> {
         let user = serde_json::json!({ "text": text }).to_string();
-        self.ai_raw(system, &user, purpose, AI_TIMEOUT)
+        self.ai_raw(system, &user, purpose, ai_timeout_for(text))
     }
 
     fn ai_raw(
@@ -1214,12 +1478,20 @@ impl Controller {
             dictionary.terms(),
             Some(style.as_str()).filter(|s| !s.is_empty()),
         );
-        let mut result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+        let timeout = ai_timeout_for(&prepared.text);
+        let mut result = providers::chat(&cfg, &request.system, &request.user, timeout);
         // Providers retire models. If ours is gone, pick a current one and try once more.
         if matches!(&result, Err(providers::CallError::Http(404, body)) if body.contains("model")) {
             if let Some(model) = crate::heal_ai_model(&self.state(), &cfg) {
                 cfg.model = model;
-                result = providers::chat(&cfg, &request.system, &request.user, AI_TIMEOUT);
+                result = providers::chat(&cfg, &request.system, &request.user, timeout);
+            }
+        }
+        // The free daily limit of this model is used up: the next model has its own.
+        if matches!(result, Err(providers::CallError::RateLimited)) {
+            if let Some(alt) = crate::fallback_cleanup_model(&cfg) {
+                cfg.model = alt;
+                result = providers::chat(&cfg, &request.system, &request.user, timeout);
             }
         }
         if let Ok(conn) = self.state().db.lock() {
@@ -1342,7 +1614,24 @@ impl Controller {
         // A Roman-letter answer from the no-fixed-language request, kept in case the Hindi-mode
         // answer comes back in Hindi letters and cannot be converted (AI limit reached).
         let mut roman_alternative: Option<String> = None;
-        if let Some(cfg) = cloud_cfg {
+        // Long dictations go in pieces (whole-file recognition skipped stretches of speech).
+        let long = samples.len() > crate::long::PIECES_FROM_SECS * app_asr::SAMPLE_RATE as usize;
+        if long {
+            if let Some(cfg) = cloud_cfg.as_ref() {
+                match self.recognise_long_cloud(cfg, &samples, &language, &hint, &name_hint, quiet)
+                {
+                    Some((text, label, alt)) => {
+                        used_cloud = true;
+                        recognised = Some((text, label));
+                        roman_alternative = alt;
+                    }
+                    None => {
+                        cloud_note = Some("cloud recognition failed, used this computer".into())
+                    }
+                }
+            }
+        }
+        if let Some(cfg) = cloud_cfg.filter(|_| !long) {
             // Compressed (Ogg/Opus, about 12 times smaller than WAV, same accuracy measured on
             // 45 clips): the upload is most of the waiting time on a slow connection.
             let body = app_asr::opus::encode_ogg_opus(&samples)
@@ -1495,6 +1784,27 @@ impl Controller {
         }
         let (raw, engine_label) = match recognised {
             Some(r) => r,
+            // Long dictation on this computer: the same pieces, one after another.
+            None if long => {
+                let pieces = crate::meeting::split_for_recognition(&samples);
+                let n = pieces.len();
+                let mut parts = Vec::with_capacity(n);
+                for (_, p) in &pieces {
+                    let t = self
+                        .recognise_piece_locally(p, &language, &hint, &name_hint)
+                        .ok_or("speech engine not loaded")?;
+                    parts.push(app_asr::guard::filter_text(&t, quiet));
+                }
+                let label = self
+                    .engine
+                    .as_ref()
+                    .map(|l| l.label.clone())
+                    .unwrap_or_default();
+                (
+                    crate::long::join_pieces(&parts),
+                    format!("{label} ({n} pieces)"),
+                )
+            }
             None => {
                 self.ensure_engine()?;
                 // Cloud failed: decide English or Hinglish here, as without Groq.

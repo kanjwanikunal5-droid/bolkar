@@ -1,6 +1,6 @@
 # Status
 
-Last updated: **20 November 2026** (versions 0.4.0 to 0.4.5 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
+Last updated: **21 November 2026** (versions 0.4.0 to 0.4.6 "Speak Flow" sections near the end; Stages 5-9 before it; summary in docs/FINAL_REPORT.md). Stages 0, 1 and 2 are built, and GitHub CI passed on all
 of them. An installer exists and was installed and checked on the owner's laptop. Several of their acceptance
 tests need the owner at the keyboard (or his API key) and are listed below as **not run**.
 
@@ -884,6 +884,39 @@ same first four letters, at most 40). Every word still corrects spellings on thi
 before. Test: 2,005 terms -> the right 4 for a sentence (exact, then a near match "kaggel" ->
 "Kaggle"), at most 40. Checks: see the commit; request sizes in real use to be read from the
 owner's diagnostics log after installing.
+
+## 21 November 2026: version 0.4.6 - long dictations complete, faster
+
+Problem (owner): in dictations of several minutes, words in the middle went missing. Cause,
+measured on 14 of the owner's own long recordings (50-135 s): sending the whole recording to
+Whisper in one request silently skipped whole stretches (46 words in a row in one, 20 in
+another). Fix: recordings over 40 s are cut at quiet moments into pieces of at most ~29 s, all
+sent at the same time (at most 6 in flight, retried once after 2 s, a piece still refused is
+recognised on this computer); a piece that comes back with far too few words for its speech is
+redone in two halves. Hinglish pieces get the Hindi-mode second pass per piece. Also: the
+dictionary is one lookup table instead of one pattern per word (5,000 words: build 1.31 s ->
+6.3 ms, apply 117 ms -> 0.08 ms); AI time limits grow with text length (2.5 s + 12 ms per word,
+at most 9 s); clean-up falls back to the second Groq model when the first hits its limit.
+
+Measured with the release build (quiet self-test, test profile, nothing typed or shown):
+
+| Test | Before (0.4.5) | 0.4.6 |
+|---|---|---|
+| Owner's 14 long recordings, words returned (old app vs new) | 2 recordings lost 37-59 words (98 vs 157, 120 vs 163) | all within 3 words of the piece-by-piece reference; 1.2-4.1 s recognition each |
+| Synthetic English, 5.6 min, 881 words | WER 3.97%, 4 deletions, 11.8 s | WER 3.29%, 1 deletion, 4.7 s |
+| Synthetic English + Hinglish, 3.9 min, 458 words | WER 35.37% | WER 6.33% (5.02% with Hinglish spelling variants), 13.9 s |
+
+The owner's recordings have no corrected reference text, so for them only word counts are
+compared, not accuracy. Checks: `cargo fmt` clean, `clippy -D warnings` clean, `cargo test`
+217 passed / 0 failed / 3 ignored. Not run: `RELEASE_CHECKLIST.md` (needs the owner at the
+keyboard); real dictations of 5-10 minutes (none recorded yet; the longest tested is the 5.6 min
+synthetic one).
+
+Dictionary: 1,000 prepared words (800 English, 200 Hinglish) and 2,400 new ones (2,055 English =
+86%, 345 Hinglish) checked against the owner's existing 1,568 words (no repeats of terms or
+spoken forms). Plain English phrases are added as hints only (they help recognition and the AI
+keep them; they never change capitals); only acronyms, special spellings and words with a spoken
+form auto-correct. The database is backed up to Downloads before each addition.
 
 ## Measured accuracy per language
 
